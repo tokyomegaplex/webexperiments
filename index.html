@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>amalgamation.studio — Paint</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{width:100vw;height:100vh;overflow:hidden;background:#008080;font-family:"MS Sans Serif","Segoe UI",Arial,sans-serif;font-size:11px;user-select:none;-webkit-user-select:none}
+#app{position:absolute;top:6px;left:6px;right:6px;bottom:6px;background:#c0c0c0;display:flex;flex-direction:column;box-shadow:2px 2px 0 #404040,4px 4px 0 #000}
+#titlebar{height:20px;background:linear-gradient(to right,#00007a,#1084d0);color:#fff;display:flex;align-items:center;padding:0 4px;gap:5px;flex-shrink:0;font-weight:bold;font-size:11px}
+#titlebar .ti{flex:1;white-space:nowrap;overflow:hidden}
+.wbts{display:flex;gap:2px}
+.wbt{width:16px;height:14px;background:#c0c0c0;color:#000;border:1px solid;border-color:#fff #808080 #808080 #fff;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold;cursor:default;flex-shrink:0}
+#menubar{height:20px;background:#c0c0c0;border-bottom:1px solid #808080;display:flex;align-items:center;padding:0 2px;flex-shrink:0}
+.mi{padding:2px 7px;cursor:default;font-size:11px}
+.mi:hover,.mi.open{background:#000080;color:#fff}
+#mainarea{flex:1;display:flex;overflow:hidden;position:relative;min-height:0}
+#toolbar{width:54px;background:#c0c0c0;border-right:2px solid #808080;padding:3px;display:flex;flex-direction:column;gap:1px;flex-shrink:0}
+.trow{display:flex;gap:2px;margin-bottom:1px}
+.tbtn{width:24px;height:24px;background:#c0c0c0;border:2px solid;border-color:#fff #808080 #808080 #fff;display:flex;align-items:center;justify-content:center;cursor:default}
+.tbtn.active{border-color:#808080 #fff #fff #808080;background:#b0b0b0}
+.tbtn svg{width:16px;height:16px;display:block}
+.tdiv{height:1px;background:#808080;margin:3px 0;border-bottom:1px solid #fff}
+#szpick{display:flex;flex-direction:column;gap:3px;padding:2px}
+.szo{display:flex;align-items:center;justify-content:center;padding:2px;border:1px solid transparent;cursor:default}
+.szo.active{border-color:#000080;background:#d8d8ee}
+.szd{background:#000;border-radius:50%}
+#cwrap{flex:1;background:#808080;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden}
+canvas#c{background:#fff;display:block;box-shadow:1px 1px 0 #404040,2px 2px 0 #000;cursor:none}
+#selcvs{position:absolute;pointer-events:none;z-index:50}
+#cursel{position:absolute;top:0;left:0;pointer-events:none;z-index:200;will-change:transform}
+#bottomarea{flex-shrink:0}
+#palette{display:flex;align-items:center;background:#c0c0c0;padding:3px 5px;gap:2px;border-top:2px solid #fff;border-bottom:1px solid #808080;min-height:26px;flex-wrap:wrap}
+#curduo{width:32px;height:22px;position:relative;margin-right:5px;flex-shrink:0}
+#fgsw{position:absolute;width:20px;height:16px;top:0;left:0;border:1px solid #000;z-index:2}
+#bgsw{position:absolute;width:20px;height:16px;bottom:0;right:0;border:1px solid #808080;background:#fff;z-index:1}
+.sw{width:14px;height:14px;border:1px solid #808080;cursor:default;flex-shrink:0;display:inline-block}
+.sw.cur{outline:2px solid #000;outline-offset:-1px}
+#statusbar{display:flex;height:18px;background:#c0c0c0;border-top:2px solid #fff}
+.sc{padding:0 8px;font-size:11px;border-right:1px solid #808080;display:flex;align-items:center;white-space:nowrap}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="titlebar">
+    <span style="font-size:10px">&#127912;</span>
+    <span class="ti">untitled &mdash; amalgamation.studio Paint</span>
+    <div class="wbts">
+      <div class="wbt">_</div>
+      <div class="wbt" style="font-size:7px">&#9633;</div>
+      <div class="wbt">&times;</div>
+    </div>
+  </div>
+  <div id="menubar">
+    <div class="mi">File</div>
+    <div class="mi" id="menu-edit">Edit</div>
+    <div class="mi">View</div>
+    <div class="mi">Image</div>
+    <div class="mi">Colors</div>
+    <div class="mi">Help</div>
+  </div>
+  <div id="mainarea">
+    <div id="toolbar">
+      <div class="trow">
+        <div class="tbtn" id="btn-select" title="Select">
+          <svg viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="14" height="14" stroke="#000" stroke-width="1.2" stroke-dasharray="3,2"/></svg>
+        </div>
+        <div class="tbtn active" id="btn-pencil" title="Pencil">
+          <svg viewBox="0 0 16 16"><path d="M13 1l2 2L5 13 2 14l1-3z" fill="#ffd700" stroke="#000" stroke-width=".7" stroke-linejoin="round"/><path d="M13 1l2 2" stroke="#bbb" stroke-width="1.2"/><path d="M2 14l3-1-2-2z" fill="#555"/></svg>
+        </div>
+      </div>
+      <div class="trow">
+        <div class="tbtn" id="btn-brush" title="Brush">
+          <svg viewBox="0 0 16 16"><path d="M12 1c2 2 2 5 0 7L6 14c-1 1-3 1-3 0s0-2 1-3l6-6c1-2 3-4 2-4z" fill="#8B4513" stroke="#000" stroke-width=".7"/><circle cx="4" cy="13" r="2" fill="#222" stroke="#000" stroke-width=".5"/></svg>
+        </div>
+        <div class="tbtn" id="btn-spray" title="Spray">
+          <svg viewBox="0 0 16 16"><rect x="5" y="8" width="9" height="7" rx="1.5" fill="#888" stroke="#000" stroke-width=".7"/><rect x="8" y="4" width="4" height="5" fill="#555" stroke="#000" stroke-width=".5"/><rect x="11" y="6" width="4" height="1.5" fill="#333"/><circle cx="2.5" cy="4" r="1.2" fill="#333" opacity=".7"/><circle cx="5" cy="2.5" r="1" fill="#333" opacity=".6"/></svg>
+        </div>
+      </div>
+      <div class="trow">
+        <div class="tbtn" id="btn-callig" title="Calligraphy">
+          <svg viewBox="0 0 16 16"><path d="M2 14L11 2l3 2L6 16z" fill="#222" stroke="#000" stroke-width=".5"/><path d="M11 2l3 2" stroke="#999" stroke-width="1"/></svg>
+        </div>
+        <div class="tbtn" id="btn-bucket" title="Fill">
+          <svg viewBox="0 0 16 16"><path d="M5 1l2 0 6 6v1.5H2V7z" fill="#888" stroke="#000" stroke-width=".7"/><path d="M2 8.5h11.5l-1.5 7h-8z" fill="#bbb" stroke="#000" stroke-width=".7"/><circle cx="14.5" cy="13" r="1.8" fill="#f44"/></svg>
+        </div>
+      </div>
+      <div class="tdiv"></div>
+      <div id="szpick">
+        <div class="szo" data-s="1"><div class="szd" style="width:2px;height:2px"></div></div>
+        <div class="szo active" data-s="2"><div class="szd" style="width:4px;height:4px"></div></div>
+        <div class="szo" data-s="5"><div class="szd" style="width:7px;height:7px"></div></div>
+        <div class="szo" data-s="10"><div class="szd" style="width:11px;height:11px"></div></div>
+      </div>
+    </div>
+    <div id="cwrap">
+      <canvas id="c" width="760" height="460"></canvas>
+      <canvas id="selcvs" width="760" height="460"></canvas>
+    </div>
+  </div>
+  <div id="bottomarea">
+    <div id="palette">
+      <div id="curduo"><div id="fgsw"></div><div id="bgsw"></div></div>
+    </div>
+    <div id="statusbar">
+      <div class="sc" id="st-tool" style="width:90px">Pencil</div>
+      <div class="sc" id="st-pos" style="width:80px">0, 0</div>
+      <div class="sc" id="st-act" style="flex:1">Initializing...</div>
+    </div>
+  </div>
+  <!-- Cursor floats over entire app -->
+  <div id="cursel"></div>
+</div>
+<script>
+'use strict';
+// ── Elements ──────────────────────────────────────────────────────────
+const app    = document.getElementById('app');
+const cwrap  = document.getElementById('cwrap');
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const selCvs = document.getElementById('selcvs');
+const selCtx = selCvs.getContext('2d');
+const curEl  = document.getElementById('cursel');
+const fgSw   = document.getElementById('fgsw');
+const stTool = document.getElementById('st-tool');
+const stPos  = document.getElementById('st-pos');
+const stAct  = document.getElementById('st-act');
+const CW = canvas.width, CH = canvas.height;
+
+// ── Letter stroke paths ────────────────────────────────────────────────
+// x in [0, letter.w], y in [0,1] (baseline=1), descenders go beyond 1
+const STROKES = {
+  a:{w:.65,s:[[[.62,.27],[.50,.08],[.28,.07],[.10,.24],[.08,.50],[.12,.76],[.32,.93],[.55,.91],[.65,.73],[.65,.48],[.62,.27],[.62,.93]]]},
+  m:{w:.95,s:[[[.08,.93],[.08,.30]],[[.08,.30],[.14,.12],[.30,.08],[.45,.18],[.48,.36],[.48,.93]],[[.48,.36],[.55,.12],[.71,.08],[.86,.18],[.88,.36],[.88,.93]]]},
+  l:{w:.30,s:[[[.50,.04],[.48,.30],[.46,.65],[.46,.93]]]},
+  g:{w:.70,s:[[[.62,.27],[.50,.08],[.28,.07],[.10,.24],[.08,.50],[.12,.76],[.32,.93],[.55,.91],[.65,.73],[.65,.48],[.62,.27],[.65,.93],[.65,1.18],[.55,1.35],[.35,1.38],[.15,1.28],[.08,1.12]]]},
+  t:{w:.52,s:[[[.50,.04],[.50,.36],[.50,.70],[.48,.93]],[[.10,.40],[.30,.37],[.50,.35],[.72,.37],[.92,.40]]]},
+  i:{w:.28,s:[[[.50,.10],[.53,.08],[.56,.11],[.52,.14],[.50,.10]],[[.50,.29],[.50,.61],[.50,.93]]]},
+  o:{w:.65,s:[[[.50,.08],[.72,.10],[.88,.28],[.91,.50],[.88,.73],[.71,.91],[.50,.93],[.28,.91],[.12,.73],[.10,.50],[.12,.28],[.28,.10],[.50,.08]]]},
+  n:{w:.65,s:[[[.08,.93],[.08,.50],[.08,.28],[.18,.12],[.38,.08],[.58,.15],[.68,.35],[.71,.62],[.71,.93]]]}
+};
+const WORD = 'amalgamation';
+
+// ── Math helpers ───────────────────────────────────────────────────────
+const lerp=(a,b,t)=>a+(b-a)*t;
+const rand=(a,b)=>a+Math.random()*(b-a);
+const randInt=(a,b)=>Math.floor(rand(a,b+.999));
+const pick=arr=>arr[randInt(0,arr.length-1)];
+const dist=(ax,ay,bx,by)=>Math.hypot(bx-ax,by-ay);
+
+function catmullSample(pts, density=55){
+  if(pts.length<2) return pts.map(p=>({x:p[0],y:p[1]}));
+  const res=[], N=pts.length;
+  const ext=[pts[0],...pts,pts[N-1]];
+  for(let i=1;i<ext.length-2;i++){
+    const [p0,p1,p2,p3]=[ext[i-1],ext[i],ext[i+1],ext[i+2]];
+    const segLen=Math.hypot(p2[0]-p1[0],p2[1]-p1[1]);
+    const steps=Math.max(3,Math.round(segLen*density));
+    for(let j=0;j<steps;j++){
+      const t=j/steps,t2=t*t,t3=t2*t;
+      res.push({
+        x:.5*((2*p1[0])+(-p0[0]+p2[0])*t+(2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*t2+(-p0[0]+3*p1[0]-3*p2[0]+p3[0])*t3),
+        y:.5*((2*p1[1])+(-p0[1]+p2[1])*t+(2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*t2+(-p0[1]+3*p1[1]-3*p2[1]+p3[1])*t3)
+      });
+    }
+  }
+  res.push({x:pts[N-1][0],y:pts[N-1][1]});
+  return res;
+}
+
+function hexToRgb(h){return[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];}
+
+// ── Colors ─────────────────────────────────────────────────────────────
+const PAL=['#000000','#808080','#800000','#808000','#008000','#008080','#000080','#800080',
+           '#c0c0c0','#ffffff','#ff0000','#ffff00','#00ff00','#00ffff','#0000ff','#ff00ff',
+           '#ff8800','#804000','#ff6699','#66ccff','#99ff66','#cc99ff','#ff4444','#44ffcc',
+           '#ffcc44','#4488ff','#aaffaa','#ffaacc'];
+const SCHEMES=[
+  {fill:'#ff2244',out:'#880022'},{fill:'#2244ff',out:'#001188'},
+  {fill:'#ffdd00',out:'#aa7700'},{fill:'#00ff88',out:'#006633'},
+  {fill:'#ff44cc',out:'#880077'},{fill:'#44aaff',out:'#004488'},
+  {fill:'#ff8800',out:'#884400'},{fill:'#88ff00',out:'#446600'},
+  {fill:'#aa44ff',out:'#440088'},{fill:'#00ccff',out:'#006688'},
+  {fill:'#ff0000',out:'#800000'},{fill:'#ffffff',out:'#888888'}
+];
+
+// ── Build palette swatches ─────────────────────────────────────────────
+const palEl=document.getElementById('palette');
+PAL.forEach((c,i)=>{
+  const s=document.createElement('div');
+  s.className='sw'; s.style.background=c;
+  s.dataset.c=c; s.id='sw'+i;
+  palEl.appendChild(s);
+});
+
+// ── Flood fill ─────────────────────────────────────────────────────────
+function floodFill(px,py,fillHex){
+  px=Math.round(px); py=Math.round(py);
+  if(px<0||px>=CW||py<0||py>=CH) return;
+  const img=ctx.getImageData(0,0,CW,CH),d=img.data;
+  const i0=(py*CW+px)*4;
+  const [tr,tg,tb]=[d[i0],d[i0+1],d[i0+2]];
+  const [fr,fg,fb]=hexToRgb(fillHex);
+  if(tr===fr&&tg===fg&&tb===fb) return;
+  const stk=[px+py*CW],vis=new Uint8Array(CW*CH);
+  let n=0;
+  while(stk.length&&n<2e6){
+    n++; const pos=stk.pop();
+    if(vis[pos]) continue; vis[pos]=1;
+    const x=pos%CW,y=(pos/CW)|0,ii=pos*4;
+    if(Math.abs(d[ii]-tr)>28||Math.abs(d[ii+1]-tg)>28||Math.abs(d[ii+2]-tb)>28) continue;
+    d[ii]=fr;d[ii+1]=fg;d[ii+2]=fb;d[ii+3]=255;
+    if(x>0) stk.push(pos-1);
+    if(x<CW-1) stk.push(pos+1);
+    if(y>0) stk.push(pos-CW);
+    if(y<CH-1) stk.push(pos+CW);
+  }
+  ctx.putImageData(img,0,0);
+}
+
+
+// ── Cursor SVGs (stored as template strings) ──────────────────────────
+const CSR = {
+  arrow:  '<svg width="18" height="22" viewBox="0 0 18 22"><path d="M2 1L2 17L6 13L8.5 19L11 18L8.5 12L14 12Z" fill="black" stroke="white" stroke-width="1" stroke-linejoin="round" paint-order="stroke"/></svg>',
+  pencil: '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M17 1l4 4L7 19 3 20l1-4z" fill="#ffd700" stroke="#000" stroke-width=".8" stroke-linejoin="round"/><path d="M17 1l4 4" stroke="#bbb" stroke-width="1.5"/><path d="M3 20l4-1-3-3z" fill="#444"/><rect x="16" y="0" width="3" height="4" fill="#aaa" stroke="#000" stroke-width=".4" transform="rotate(45 17.5 2)"/></svg>',
+  brush:  '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M14 1c2 2 2 6 0 8L6 17c-1 1-3 1.5-3.5.5S2 15.5 3 14.5l8-8c1-2 1-6 3-5.5z" fill="#8B4513" stroke="#000" stroke-width=".7"/><ellipse cx="4" cy="16.5" rx="2.5" ry="2.5" fill="#222" stroke="#000" stroke-width=".5"/></svg>',
+  spray:  '<svg width="22" height="22" viewBox="0 0 22 22"><rect x="6" y="9" width="11" height="9" rx="2" fill="#888" stroke="#000" stroke-width=".7"/><rect x="9" y="5" width="4.5" height="5" fill="#555" stroke="#000" stroke-width=".5"/><rect x="12.5" y="7" width="5" height="1.5" fill="#333"/><circle cx="3" cy="4.5" r="1.3" fill="#333" opacity=".7"/><circle cx="5.5" cy="2.5" r="1" fill="#333" opacity=".6"/><circle cx="2" cy="7.5" r="1" fill="#333" opacity=".5"/><circle cx="7" cy="2" r="1" fill="#333" opacity=".5"/></svg>',
+  callig: '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M2 19L13 2l4 3L6 21z" fill="#222" stroke="#000" stroke-width=".6"/><path d="M13 2l4 3" stroke="#888" stroke-width="1.2"/></svg>',
+  bucket: '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M5 2L8 2L16 10L16 11.5L2 11.5Z" fill="#888" stroke="#000" stroke-width=".7"/><path d="M2 11.5L17 11.5L15 20L4 20Z" fill="#bbb" stroke="#000" stroke-width=".7"/><circle cx="20" cy="17" r="2.5" fill="#f44" stroke="#000" stroke-width=".5"/></svg>',
+  select: '<svg width="18" height="22" viewBox="0 0 18 22"><path d="M2 1L2 13L6 9L8.5 15L11 14L8.5 8L14 8Z" fill="black" stroke="white" stroke-width="1" stroke-linejoin="round" paint-order="stroke"/></svg>'
+};
+
+// ── Cursor controller ─────────────────────────────────────────────────
+// All positions are relative to #app top-left corner
+const cur = {
+  x: 100, y: 100,
+  queue: [],           // [{x,y,spd,dn}]
+  drawing: false,
+  tool: 'pencil',
+  color: '#000000',
+  size: 2,
+
+  get idle(){ return this.queue.length===0; },
+
+  enqueue(pts, spd, dn){
+    pts.forEach(p=>this.queue.push({x:p.x,y:p.y,spd:spd||500,dn:!!dn}));
+  },
+
+  setTool(t){
+    this.tool=t;
+    curEl.innerHTML = CSR[t]||CSR.arrow;
+    document.querySelectorAll('.tbtn').forEach(b=>b.classList.remove('active'));
+    const btn=document.getElementById('btn-'+t);
+    if(btn) btn.classList.add('active');
+    stTool.textContent=t.charAt(0).toUpperCase()+t.slice(1);
+  },
+
+  setColor(hex){
+    this.color=hex;
+    fgSw.style.background=hex;
+    document.querySelectorAll('.sw.cur').forEach(s=>s.classList.remove('cur'));
+    const s=document.querySelector('.sw[data-c="'+hex+'"]');
+    if(s) s.classList.add('cur');
+  },
+
+  setSize(s){
+    this.size=s;
+    document.querySelectorAll('.szo').forEach(el=>el.classList.remove('active'));
+    const el=document.querySelector('.szo[data-s="'+s+'"]');
+    if(el) el.classList.add('active');
+  },
+
+  update(dt){
+    if(!this.queue.length) return;
+    const tgt=this.queue[0];
+    const dx=tgt.x-this.x, dy=tgt.y-this.y;
+    const d=Math.hypot(dx,dy);
+    if(d<0.6){
+      this.x=tgt.x; this.y=tgt.y; this.drawing=tgt.dn;
+      this.queue.shift(); return;
+    }
+    const step=Math.min(d, tgt.spd*dt);
+    // Natural wobble when drawing
+    const wx=tgt.dn?(Math.random()-.5)*0.5:0;
+    const wy=tgt.dn?(Math.random()-.5)*0.5:0;
+    const nx=this.x+(dx/d)*step+wx;
+    const ny=this.y+(dy/d)*step+wy;
+    if(tgt.dn) applyStroke(this.x,this.y,nx,ny);
+    this.x=nx; this.y=ny; this.drawing=tgt.dn;
+    stPos.textContent=Math.round(nx)+', '+Math.round(ny);
+  }
+};
+
+// ── Coordinate helpers ────────────────────────────────────────────────
+// Get canvas pixel offset within #app
+function canvasOffset(){
+  const cr=canvas.getBoundingClientRect(), ar=app.getBoundingClientRect();
+  return {ox:cr.left-ar.left, oy:cr.top-ar.top};
+}
+// Canvas pixel → app position
+function cvToApp(cx,cy){ const {ox,oy}=canvasOffset(); return {x:cx+ox,y:cy+oy}; }
+// App position → canvas pixel
+function appToCv(ax,ay){ const {ox,oy}=canvasOffset(); return {x:ax-ox,y:ay-oy}; }
+// Center of DOM element in app coords
+function elCenter(el){
+  const r=el.getBoundingClientRect(), ar=app.getBoundingClientRect();
+  return {x:r.left-ar.left+r.width/2, y:r.top-ar.top+r.height/2};
+}
+
+// ── Drawing engine ─────────────────────────────────────────────────────
+function applyStroke(ax1,ay1,ax2,ay2){
+  const {ox,oy}=canvasOffset();
+  const x1=ax1-ox, y1=ay1-oy, x2=ax2-ox, y2=ay2-oy;
+  const tool=cur.tool, color=cur.color, size=cur.size;
+
+  if(tool==='pencil'){
+    ctx.save();
+    ctx.strokeStyle=color; ctx.lineWidth=size;
+    ctx.lineCap='round'; ctx.lineJoin='round'; ctx.globalAlpha=1;
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    ctx.restore();
+  } else if(tool==='brush'){
+    const len=Math.hypot(x2-x1,y2-y1);
+    const steps=Math.max(1,Math.round(len/1.5));
+    ctx.save(); ctx.fillStyle=color; ctx.globalAlpha=0.10;
+    for(let i=0;i<=steps;i++){
+      const t=steps?i/steps:0;
+      ctx.beginPath();
+      ctx.arc(lerp(x1,x2,t),lerp(y1,y2,t),size*2.8,0,Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+  } else if(tool==='spray'){
+    const len=Math.hypot(x2-x1,y2-y1);
+    const steps=Math.max(1,Math.round(len/4));
+    ctx.save(); ctx.fillStyle=color;
+    for(let i=0;i<=steps;i++){
+      const t=steps?i/steps:0;
+      const bx=lerp(x1,x2,t), by=lerp(y1,y2,t);
+      for(let j=0;j<12;j++){
+        const a=Math.random()*Math.PI*2, r=Math.random()*size*5.5;
+        ctx.globalAlpha=Math.random()*0.55+0.1;
+        ctx.beginPath();
+        ctx.arc(bx+Math.cos(a)*r, by+Math.sin(a)*r, Math.random()*1.8+0.3, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  } else if(tool==='callig'){
+    const len=Math.hypot(x2-x1,y2-y1);
+    const steps=Math.max(1,Math.round(len));
+    ctx.save(); ctx.fillStyle=color; ctx.globalAlpha=0.92;
+    for(let i=0;i<=steps;i++){
+      const t=steps?i/steps:0;
+      ctx.save();
+      ctx.translate(lerp(x1,x2,t), lerp(y1,y2,t));
+      ctx.rotate(Math.PI/4.2);
+      ctx.fillRect(-size*1.8,-size*.35,size*3.6,size*.7);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+}
+
+
+// ── Word layout helpers ───────────────────────────────────────────────
+function wordTotalWidth(h, spc=0.18){
+  let w=0;
+  for(const ch of WORD){
+    const d=STROKES[ch]; if(!d) continue;
+    w+=d.w*h+spc*h;
+  }
+  return w-spc*h;
+}
+
+// Get canvas [x,y] points for each stroke of a letter, given origin
+function letterCanvasPaths(ch, ox, oy, h){
+  const d=STROKES[ch]; if(!d) return [];
+  const lw=d.w*h;
+  return d.s.map(stroke=>
+    catmullSample(stroke,60).map(p=>({x:ox+p.x*lw, y:oy+p.y*h}))
+  );
+}
+
+// ── Selection / transform state ───────────────────────────────────────
+let selRect=null;   // {x,y,w,h} in canvas pixels
+let selData=null;   // saved ImageData
+let dashOff=0;
+
+function drawMarchingAnts(){
+  if(!selRect) return;
+  selCtx.clearRect(0,0,CW,CH);
+  selCtx.save();
+  selCtx.strokeStyle='#000'; selCtx.lineWidth=1;
+  selCtx.setLineDash([6,4]); selCtx.lineDashOffset=-dashOff;
+  selCtx.strokeRect(selRect.x+.5,selRect.y+.5,selRect.w,selRect.h);
+  selCtx.strokeStyle='#fff'; selCtx.lineDashOffset=-dashOff+5;
+  selCtx.strokeRect(selRect.x+.5,selRect.y+.5,selRect.w,selRect.h);
+  selCtx.restore();
+}
+
+// ── Async helpers ──────────────────────────────────────────────────────
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function waitIdle(){
+  return new Promise(r=>{
+    (function chk(){ cur.idle?r():requestAnimationFrame(chk); })();
+  });
+}
+// Move cursor to app position (no drawing)
+async function moveTo(x,y,spd=600){
+  cur.enqueue([{x,y}],spd,false); await waitIdle();
+}
+// Move cursor to canvas pixel (no drawing)
+async function moveToC(cx,cy,spd=600){
+  const p=cvToApp(cx,cy); cur.enqueue([{x:p.x,y:p.y}],spd,false); await waitIdle();
+}
+// Draw along canvas-pixel path
+async function drawPath(pts, spd=160){
+  if(!pts.length) return;
+  const {ox,oy}=canvasOffset();
+  cur.enqueue([{x:pts[0].x+ox,y:pts[0].y+oy}],700,false);
+  if(pts.length>1)
+    cur.enqueue(pts.slice(1).map(p=>({x:p.x+ox,y:p.y+oy})),spd,true);
+  await waitIdle();
+}
+// Animate cursor to toolbar button, then update state
+async function switchTool(t){
+  const btn=document.getElementById('btn-'+t);
+  if(btn){ await moveTo(...Object.values(elCenter(btn)),500); await sleep(80); }
+  cur.setTool(t); await sleep(80);
+}
+// Animate cursor to palette swatch, then update state
+async function pickColor(hex){
+  const sw=document.querySelector('.sw[data-c="'+hex+'"]');
+  if(sw){ await moveTo(...Object.values(elCenter(sw)),500); await sleep(60); }
+  cur.setColor(hex); await sleep(60);
+}
+
+
+// ── Draw word stroke-by-stroke ─────────────────────────────────────────
+async function drawWordStrokes(letterH, spc=0.18){
+  const tw=wordTotalWidth(letterH,spc);
+  const startX=Math.max(10,(CW-tw)/2);
+  // vertical center, account for descenders in 'g'
+  const startY=(CH-letterH)/2 - letterH*0.1;
+  let cx=startX;
+  for(const ch of WORD){
+    const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
+    const paths=letterCanvasPaths(ch,cx,startY,letterH);
+    const spd = cur.tool==='spray'?240 : cur.tool==='brush'?110 : cur.tool==='callig'?130 : 170;
+    for(const p of paths){
+      await drawPath(p, spd);
+      await sleep(rand(15,55));
+    }
+    cx+=d.w*letterH+spc*letterH;
+    await sleep(rand(40,120));
+  }
+}
+
+// ── Two-line word drawing (for large sizes) ───────────────────────────
+async function drawWordTwoLines(letterH, spc=0.18){
+  const line1='amalga', line2='mation';
+  for(const [line, lineY] of [[line1, CH*0.28],[line2, CH*0.62]]){
+    let tw=0;
+    for(const ch of line){ const d=STROKES[ch]; if(d) tw+=d.w*letterH+spc*letterH; }
+    tw-=spc*letterH;
+    let cx=Math.max(10,(CW-tw)/2);
+    const startY=lineY-letterH*0.5;
+    for(const ch of line){
+      const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
+      const paths=letterCanvasPaths(ch,cx,startY,letterH);
+      const spd=cur.tool==='spray'?240:cur.tool==='brush'?110:155;
+      for(const p of paths){ await drawPath(p,spd); await sleep(rand(15,50)); }
+      cx+=d.w*letterH+spc*letterH;
+      await sleep(rand(30,100));
+    }
+    await sleep(rand(100,300));
+  }
+}
+
+// ── Bubble letter drawing ─────────────────────────────────────────────
+async function drawBubbleLetters(scheme, letterH){
+  const spc=0.18;
+  const tw=wordTotalWidth(letterH,spc);
+  let cx=Math.max(15,(CW-tw)/2);
+  const baseY=(CH+letterH*0.5)/2;
+  const fontSize=Math.round(letterH*1.05);
+  const fnt=`bold ${fontSize}px "Arial Black","Impact",Arial,sans-serif`;
+
+  for(const ch of WORD){
+    const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
+    const charW=d.w*letterH;
+
+    // Move cursor across this character area (simulate drawing)
+    const appStart=cvToApp(cx-4, baseY-letterH*0.9);
+    const appEnd=cvToApp(cx+charW+4, baseY-letterH*0.9);
+    await moveTo(appStart.x, appStart.y, 700);
+
+    // Draw the bubble letter directly
+    ctx.save();
+    ctx.font=fnt;
+    ctx.textBaseline='alphabetic';
+    ctx.lineJoin='round';
+    ctx.lineWidth=letterH/2.8;
+    ctx.strokeStyle=scheme.out;
+    ctx.strokeText(ch,cx,baseY);
+    ctx.fillStyle=scheme.fill;
+    ctx.fillText(ch,cx,baseY);
+    // White highlight
+    ctx.globalAlpha=0.25;
+    ctx.fillStyle='#ffffff';
+    ctx.fillText(ch,cx,baseY);
+    ctx.restore();
+
+    // Cursor sweeps across as if painting
+    cur.enqueue([{x:appEnd.x,y:appEnd.y+(Math.random()-.5)*8}], 130, false);
+    await waitIdle();
+    await sleep(rand(60,130));
+    cx+=charW+spc*letterH;
+  }
+}
+
+// ── Bucket fill action ────────────────────────────────────────────────
+async function doBucketFill(fillColor){
+  await switchTool('bucket');
+  await sleep(100);
+  cur.setColor(fillColor);
+  // Pick a point inside the text area
+  const fx=CW/2+rand(-80,80), fy=CH/2+rand(-30,30);
+  await moveToC(fx,fy,550);
+  await sleep(180);
+  // Click! (apply fill)
+  floodFill(fx,fy,fillColor);
+  await sleep(250);
+}
+
+// ── Selection + transform ─────────────────────────────────────────────
+async function doSelectTransform(){
+  await switchTool('select');
+  await sleep(150);
+
+  // Define a selection around center portion of canvas
+  const sx=CW*0.20, sy=CH*0.20, sw=CW*0.60, sh=CH*0.60;
+
+  // Draw selection rectangle (cursor drags corner to corner)
+  const p0=cvToApp(sx,sy), p1=cvToApp(sx+sw,sy+sh);
+  await moveTo(p0.x,p0.y,600);
+  await sleep(80);
+
+  // Drag to create selection (simulate mouse drag)
+  selRect={x:sx,y:sy,w:0,h:0};
+  const steps=40;
+  for(let i=1;i<=steps;i++){
+    const t=i/steps;
+    const nx=cvToApp(sx+sw*t,sy+sh*t);
+    cur.enqueue([{x:nx.x,y:nx.y}],600,false);
+    selRect.w=sw*t; selRect.h=sh*t;
+  }
+  await waitIdle();
+  await sleep(400);
+
+  // Save selected region
+  selData=ctx.getImageData(sx,sy,sw,sh);
+
+  // Animate scale-up: drag bottom-right handle outward
+  const handle=cvToApp(sx+sw,sy+sh);
+  await moveTo(handle.x,handle.y,500);
+  await sleep(100);
+
+  // Scale the selection up
+  const newW=sw*1.35, newH=sh*1.35;
+  const newX=sx-(newW-sw)/2, newY=sy-(newH-sh)/2;
+
+  // Animate handle drag
+  const target=cvToApp(newX+newW,newY+newH);
+  cur.enqueue([{x:target.x,y:target.y}],220,false);
+  await waitIdle();
+
+  // Apply transform: clear old area, draw scaled
+  ctx.clearRect(sx-2,sy-2,sw+4,sh+4);
+  ctx.fillStyle='#ffffff'; ctx.fillRect(sx-2,sy-2,sw+4,sh+4);
+
+  // Draw scaled version
+  const tempCvs=document.createElement('canvas');
+  tempCvs.width=sw; tempCvs.height=sh;
+  tempCvs.getContext('2d').putImageData(selData,0,0);
+  ctx.drawImage(tempCvs, newX, newY, newW, newH);
+
+  selRect={x:newX,y:newY,w:newW,h:newH};
+  await sleep(600);
+
+  // Sometimes also rotate slightly
+  if(Math.random()<0.5){
+    const angle=(Math.random()-.5)*0.25;
+    const cx2=newX+newW/2, cy2=newY+newH/2;
+    const rotCvs=document.createElement('canvas');
+    rotCvs.width=CW; rotCvs.height=CH;
+    const rCtx=rotCvs.getContext('2d');
+    rCtx.drawImage(canvas,0,0);
+    ctx.clearRect(newX-5,newY-5,newW+10,newH+10);
+    ctx.fillStyle='#ffffff'; ctx.fillRect(newX-5,newY-5,newW+10,newH+10);
+    ctx.save();
+    ctx.translate(cx2,cy2); ctx.rotate(angle); ctx.translate(-cx2,-cy2);
+    ctx.drawImage(tempCvs, newX, newY, newW, newH);
+    ctx.restore();
+    await sleep(400);
+  }
+
+  // Drop selection
+  await moveTo(cvToApp(CW*0.1,CH*0.1).x, cvToApp(CW*0.1,CH*0.1).y, 400);
+  selRect=null; selData=null;
+  selCtx.clearRect(0,0,CW,CH);
+  await sleep(200);
+}
+
+
+// ── Main director loop ────────────────────────────────────────────────
+const TOOLS_STROKE=['pencil','brush','spray','callig'];
+let cycleNum=0;
+
+async function runCycle(){
+  cycleNum++;
+  stAct.textContent='Cycle '+cycleNum+' — choosing style...';
+
+  // --- Randomize style ---
+  const useBubble = Math.random()<0.28;
+  const scheme    = pick(SCHEMES);
+  const letterH   = randInt(40,68);
+  const twoLines  = letterH>52 && Math.random()<0.4;
+
+  if(useBubble){
+    // --- BUBBLE LETTERS ---
+    stAct.textContent='Bubble letters';
+    // Move to toolbar area (visual cue, no specific tool needed)
+    const btn=document.getElementById('btn-brush');
+    if(btn){ await moveTo(...Object.values(elCenter(btn)),500); await sleep(100); }
+    cur.setTool('brush');
+    await sleep(200);
+    await drawBubbleLetters(scheme, letterH);
+
+  } else {
+    // --- STROKE-BASED ---
+    const tool=pick(TOOLS_STROKE);
+    const size = tool==='pencil'?randInt(1,3):
+                 tool==='callig'?randInt(2,5):
+                 tool==='spray'?randInt(2,4):randInt(2,6);
+
+    const darkColors=PAL.filter(c=>c!=='#ffffff'&&c!=='#c0c0c0'&&c!=='#aaffaa'&&c!=='#ffaacc');
+    const color=pick(darkColors);
+
+    stAct.textContent='Switching to '+tool+'...';
+    await switchTool(tool);
+    await pickColor(color);
+    cur.setSize(size);
+    await sleep(150);
+
+    stAct.textContent='Writing ('+tool+')...';
+    if(twoLines) await drawWordTwoLines(letterH);
+    else         await drawWordStrokes(letterH);
+  }
+
+  // --- Maybe do a second pass in different color ---
+  if(Math.random()<0.35){
+    const tool2=pick(TOOLS_STROKE);
+    const scheme2=pick(SCHEMES);
+    const size2=tool2==='pencil'?randInt(1,2):randInt(1,4);
+    stAct.textContent='Second pass ('+tool2+')...';
+    await switchTool(tool2);
+    await pickColor(scheme2.fill);
+    cur.setSize(size2);
+    await sleep(80);
+    const h2=randInt(30,55);
+    await drawWordStrokes(h2, 0.22);
+  }
+
+  // --- Maybe bucket fill ---
+  if(Math.random()<0.55){
+    const fillC=pick(PAL.filter(c=>c!=='#000000'&&c!=='#808080'&&c!=='#ffffff'));
+    stAct.textContent='Filling...';
+    await doBucketFill(fillC);
+    await sleep(200);
+    // Sometimes a second fill with different color
+    if(Math.random()<0.4){
+      const fillC2=pick(PAL.filter(c=>c!==fillC&&c!=='#000000'&&c!=='#ffffff'));
+      await doBucketFill(fillC2);
+    }
+  }
+
+  // --- Maybe select + transform ---
+  if(Math.random()<0.3){
+    stAct.textContent='Selecting & transforming...';
+    await doSelectTransform();
+  }
+
+  // --- Maybe write small annotation ---
+  if(Math.random()<0.25){
+    const tool3='pencil';
+    stAct.textContent='Adding detail...';
+    await switchTool(tool3);
+    await pickColor(pick(PAL.filter(c=>c!=='#ffffff')));
+    cur.setSize(1);
+    // Small underline or accent stroke across canvas
+    const y=CH*rand(0.7,0.85);
+    const pts=[{x:CW*0.1,y},{x:CW*0.45,y:y+rand(-3,3)},{x:CW*0.9,y:y+rand(-5,5)}];
+    const splined=catmullSample(pts.map(p=>[p.x,p.y]),80);
+    await drawPath(splined.slice(0,splined.length), 200);
+  }
+
+  // --- Admire ---
+  stAct.textContent='Admiring...';
+  await moveTo(cwrap.getBoundingClientRect().left-app.getBoundingClientRect().left+CW/2,
+               cwrap.getBoundingClientRect().top -app.getBoundingClientRect().top +CH/2, 300);
+  await sleep(rand(700,2200));
+
+  // --- Clear ---
+  stAct.textContent='Clearing canvas...';
+  const menuE=document.getElementById('menu-edit');
+  await moveTo(...Object.values(elCenter(menuE)),400);
+  menuE.classList.add('open');
+  await sleep(220);
+  menuE.classList.remove('open');
+
+  // Fade clear effect
+  for(let a=0;a<8;a++){
+    ctx.fillStyle='rgba(255,255,255,0.28)';
+    ctx.fillRect(0,0,CW,CH);
+    await sleep(40);
+  }
+  ctx.clearRect(0,0,CW,CH);
+  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,CW,CH);
+  selRect=null; selCtx.clearRect(0,0,CW,CH);
+  await sleep(320);
+}
+
+async function directorLoop(){
+  while(true){
+    try{ await runCycle(); }
+    catch(e){ console.error('Cycle error:',e); await sleep(1000); }
+    await sleep(200);
+  }
+}
+
+// ── Positioning of selcvs over canvas ────────────────────────────────
+function positionOverlay(){
+  // selcvs is a sibling of canvas inside cwrap; position it to exactly overlay the canvas
+  const cr=canvas.getBoundingClientRect(), wr=cwrap.getBoundingClientRect();
+  selCvs.style.left=(cr.left-wr.left)+'px';
+  selCvs.style.top=(cr.top-wr.top)+'px';
+  selCvs.style.width=cr.width+'px';
+  selCvs.style.height=cr.height+'px';
+}
+
+// ── Main animation loop ───────────────────────────────────────────────
+let lastTs=0;
+function animLoop(ts){
+  const dt=Math.min((ts-lastTs)/1000,0.05);
+  lastTs=ts;
+
+  cur.update(dt);
+
+  // Update cursor element
+  curEl.style.transform=`translate(${cur.x}px,${cur.y}px)`;
+
+  // Marching ants
+  if(selRect){
+    dashOff=(dashOff+0.15)%10;
+    drawMarchingAnts();
+  }
+
+  requestAnimationFrame(animLoop);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+function init(){
+  // White canvas
+  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,CW,CH);
+
+  // Set initial tool & color
+  cur.setTool('pencil');
+  cur.setColor('#000000');
+  cur.setSize(2);
+
+  // Position cursor in center of canvas
+  const p=cvToApp(CW/2,CH/2);
+  cur.x=p.x; cur.y=p.y;
+
+  // Set cursor SVG
+  curEl.innerHTML=CSR.pencil;
+  curEl.style.transform=`translate(${cur.x}px,${cur.y}px)`;
+
+  // Position overlay canvas
+  positionOverlay();
+
+  // Start loops
+  requestAnimationFrame(ts=>{ lastTs=ts; requestAnimationFrame(animLoop); });
+  setTimeout(directorLoop, 600);
+}
+
+window.addEventListener('load', init);
+</script>
+</body>
+</html>
