@@ -149,6 +149,35 @@ const randInt=(a,b)=>Math.floor(rand(a,b+.999));
 const pick=arr=>arr[randInt(0,arr.length-1)];
 const dist=(ax,ay,bx,by)=>Math.hypot(bx-ax,by-ay);
 
+// Smooth correlated noise — uses layered sines so jitter feels organic not jittery
+let _nT=Math.random()*50;
+function smoothNoise(dt, freq=6){
+  _nT+=dt;
+  return Math.sin(_nT*freq + Math.sin(_nT*freq*0.41)) *
+         Math.cos(_nT*freq*0.73 + Math.sin(_nT*freq*0.17));
+}
+
+// Ease in-out cubic
+function easeInOut(t){ return t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2; }
+
+// Build a slightly arced quadratic bezier path for human-like transit
+// The arc bows perpendicular to the direction — magnitude scales with distance
+function arcPath(x0,y0,x1,y1,steps=55){
+  const dx=x1-x0, dy=y1-y0, len=Math.hypot(dx,dy);
+  if(len<4) return [{x:x1,y:y1}];
+  // Perpendicular nudge: small for short moves, more for long ones, always random direction
+  const bow = (Math.random()-.5) * Math.min(len*0.28, 90);
+  const mx=(x0+x1)/2, my=(y0+y1)/2;
+  const px=-dy/len, py=dx/len;           // unit perpendicular
+  const cpx=mx+px*bow, cpy=my+py*bow;   // bezier control point
+  const result=[];
+  for(let i=1;i<=steps;i++){
+    const t=easeInOut(i/steps), u=1-t;
+    result.push({ x:u*u*x0+2*u*t*cpx+t*t*x1, y:u*u*y0+2*u*t*cpy+t*t*y1 });
+  }
+  return result;
+}
+
 function catmullSample(pts, density=55){
   if(pts.length<2) return pts.map(p=>({x:p[0],y:p[1]}));
   const res=[], N=pts.length;
@@ -276,14 +305,29 @@ const cur = {
     const tgt=this.queue[0];
     const dx=tgt.x-this.x, dy=tgt.y-this.y;
     const d=Math.hypot(dx,dy);
-    if(d<0.6){
+
+    if(d<0.55){
       this.x=tgt.x; this.y=tgt.y; this.drawing=tgt.dn;
       this.queue.shift(); return;
     }
-    const step=Math.min(d, tgt.spd*dt);
-    // Natural wobble when drawing
-    const wx=tgt.dn?(Math.random()-.5)*0.5:0;
-    const wy=tgt.dn?(Math.random()-.5)*0.5:0;
+
+    // Track how long we've been moving toward this waypoint for ease-in
+    tgt._age=(tgt._age||0)+dt;
+    const easeIn = Math.min(1, tgt._age/0.09);   // ramp up over ~90ms
+
+    // Slow down when close to target (ease-out)
+    const BRAKE=50; // px radius to start braking
+    const easeOut = Math.min(1, d/BRAKE);
+
+    const speedMult = Math.max(0.12, Math.min(easeIn, easeOut));
+    const step = Math.min(d, tgt.spd * dt * (0.18 + speedMult*0.82));
+
+    // Smooth correlated hand-tremor — only when pen is down
+    // Two perpendicular noise channels give 2-D wander
+    const noiseAmp = tgt.dn ? 0.9 : 0;
+    const wx = noiseAmp * smoothNoise(dt, 5.8);
+    const wy = noiseAmp * smoothNoise(dt, 4.4) * Math.cos(_nT*0.3);
+
     const nx=this.x+(dx/d)*step+wx;
     const ny=this.y+(dy/d)*step+wy;
     if(tgt.dn) applyStroke(this.x,this.y,nx,ny);
@@ -407,34 +451,47 @@ function waitIdle(){
     (function chk(){ cur.idle?r():requestAnimationFrame(chk); })();
   });
 }
-// Move cursor to app position (no drawing)
-async function moveTo(x,y,spd=600){
-  cur.enqueue([{x,y}],spd,false); await waitIdle();
+// Move cursor to app position — travels on a natural arced bezier path
+async function moveTo(x,y,spd=900){
+  const path=arcPath(cur.x,cur.y,x,y);
+  cur.enqueue(path,spd,false);
+  await waitIdle();
+  // Brief micro-pause after arriving (human settling)
+  if(Math.random()<0.45) await sleep(rand(18,60));
 }
-// Move cursor to canvas pixel (no drawing)
-async function moveToC(cx,cy,spd=600){
-  const p=cvToApp(cx,cy); cur.enqueue([{x:p.x,y:p.y}],spd,false); await waitIdle();
+// Move cursor to canvas pixel
+async function moveToC(cx,cy,spd=900){
+  const p=cvToApp(cx,cy); await moveTo(p.x,p.y,spd);
 }
-// Draw along canvas-pixel path
-async function drawPath(pts, spd=160){
+// Draw along canvas-pixel path — lifts pen, moves to start, then draws
+async function drawPath(pts, spd=260){
   if(!pts.length) return;
   const {ox,oy}=canvasOffset();
-  cur.enqueue([{x:pts[0].x+ox,y:pts[0].y+oy}],700,false);
-  if(pts.length>1)
-    cur.enqueue(pts.slice(1).map(p=>({x:p.x+ox,y:p.y+oy})),spd,true);
+  // Move to stroke start (pen up) — arc travel
+  const startApp={x:pts[0].x+ox, y:pts[0].y+oy};
+  const transit=arcPath(cur.x,cur.y,startApp.x,startApp.y);
+  cur.enqueue(transit, 950, false);
   await waitIdle();
+  // Tiny hesitation before pen touches paper
+  await sleep(rand(12,55));
+  // Draw the stroke (pen down)
+  if(pts.length>1)
+    cur.enqueue(pts.slice(1).map(p=>({x:p.x+ox,y:p.y+oy})), spd, true);
+  await waitIdle();
+  // Micro-stutter after stroke: 15% chance of brief stop
+  if(Math.random()<0.15) await sleep(rand(30,90));
 }
-// Animate cursor to toolbar button, then update state
+// Animate cursor to toolbar button, update state
 async function switchTool(t){
   const btn=document.getElementById('btn-'+t);
-  if(btn){ await moveTo(...Object.values(elCenter(btn)),500); await sleep(80); }
-  cur.setTool(t); await sleep(80);
+  if(btn){ await moveTo(...Object.values(elCenter(btn)),800); await sleep(rand(60,130)); }
+  cur.setTool(t); await sleep(rand(50,100));
 }
-// Animate cursor to palette swatch, then update state
+// Animate cursor to palette swatch, update state
 async function pickColor(hex){
   const sw=document.querySelector('.sw[data-c="'+hex+'"]');
-  if(sw){ await moveTo(...Object.values(elCenter(sw)),500); await sleep(60); }
-  cur.setColor(hex); await sleep(60);
+  if(sw){ await moveTo(...Object.values(elCenter(sw)),800); await sleep(rand(40,90)); }
+  cur.setColor(hex); await sleep(rand(30,70));
 }
 
 
@@ -448,13 +505,13 @@ async function drawWordStrokes(letterH, spc=0.18){
   for(const ch of WORD){
     const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
     const paths=letterCanvasPaths(ch,cx,startY,letterH);
-    const spd = cur.tool==='spray'?240 : cur.tool==='brush'?110 : cur.tool==='callig'?130 : 170;
+    const spd = cur.tool==='spray'?420 : cur.tool==='brush'?220 : cur.tool==='callig'?260 : 310;
     for(const p of paths){
       await drawPath(p, spd);
-      await sleep(rand(15,55));
+      await sleep(rand(8,35));
     }
     cx+=d.w*letterH+spc*letterH;
-    await sleep(rand(40,120));
+    await sleep(rand(25,80));
   }
 }
 
@@ -470,10 +527,10 @@ async function drawWordTwoLines(letterH, spc=0.18){
     for(const ch of line){
       const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
       const paths=letterCanvasPaths(ch,cx,startY,letterH);
-      const spd=cur.tool==='spray'?240:cur.tool==='brush'?110:155;
-      for(const p of paths){ await drawPath(p,spd); await sleep(rand(15,50)); }
+      const spd=cur.tool==='spray'?420:cur.tool==='brush'?220:300;
+      for(const p of paths){ await drawPath(p,spd); await sleep(rand(8,30)); }
       cx+=d.w*letterH+spc*letterH;
-      await sleep(rand(30,100));
+      await sleep(rand(20,70));
     }
     await sleep(rand(100,300));
   }
@@ -514,7 +571,7 @@ async function drawBubbleLetters(scheme, letterH){
     ctx.restore();
 
     // Cursor sweeps across as if painting
-    cur.enqueue([{x:appEnd.x,y:appEnd.y+(Math.random()-.5)*8}], 130, false);
+    cur.enqueue([{x:appEnd.x,y:appEnd.y+(Math.random()-.5)*8}], 220, false);
     await waitIdle();
     await sleep(rand(60,130));
     cx+=charW+spc*letterH;
@@ -704,7 +761,7 @@ async function runCycle(){
     const y=CH*rand(0.7,0.85);
     const pts=[{x:CW*0.1,y},{x:CW*0.45,y:y+rand(-3,3)},{x:CW*0.9,y:y+rand(-5,5)}];
     const splined=catmullSample(pts.map(p=>[p.x,p.y]),80);
-    await drawPath(splined.slice(0,splined.length), 200);
+    await drawPath(splined.slice(0,splined.length), 340);
   }
 
   // --- Admire ---
