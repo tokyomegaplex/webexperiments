@@ -183,7 +183,7 @@ function arcPath(x0,y0,x1,y1,steps=55){
   return result;
 }
 
-function catmullSample(pts, density=55){
+function catmullSample(pts, density=15){
   if(pts.length<2) return pts.map(p=>({x:p[0],y:p[1]}));
   const res=[], N=pts.length;
   const ext=[pts[0],...pts,pts[N-1]];
@@ -312,25 +312,26 @@ const cur = {
     const dx=tgt.x-this.x, dy=tgt.y-this.y;
     const d=Math.hypot(dx,dy);
 
-    if(d<0.55){
+    if(d<0.5){
       this.x=tgt.x; this.y=tgt.y; this.drawing=tgt.dn;
       this.queue.shift(); return;
     }
 
-    // Track how long we've been moving toward this waypoint for ease-in
-    tgt._age=(tgt._age||0)+dt;
-    const easeIn = Math.min(1, tgt._age/0.09);   // ramp up over ~90ms
-
-    // Slow down when close to target (ease-out)
-    const BRAKE=50; // px radius to start braking
-    const easeOut = Math.min(1, d/BRAKE);
-
-    const speedMult = Math.max(0.12, Math.min(easeIn, easeOut));
-    const step = Math.min(d, tgt.spd * dt * (0.18 + speedMult*0.82));
+    let step;
+    if(tgt.fast){
+      // Drawing waypoints: no easing, full speed, process multiple steps per frame
+      step=Math.min(d, tgt.spd*dt);
+    } else {
+      // Transit waypoints: ease-in from rest, ease-out near target
+      tgt._age=(tgt._age||0)+dt;
+      const easeIn=Math.min(1, tgt._age/0.08);
+      const easeOut=Math.min(1, d/45);
+      const sm=Math.max(0.12, Math.min(easeIn,easeOut));
+      step=Math.min(d, tgt.spd*dt*(0.18+sm*0.82));
+    }
 
     // Smooth correlated hand-tremor — only when pen is down
-    // Two perpendicular noise channels give 2-D wander
-    const noiseAmp = tgt.dn ? 0.9 : 0;
+    const noiseAmp = tgt.dn ? 0.85 : 0;
     const wx = noiseAmp * smoothNoise(dt, 5.8);
     const wy = noiseAmp * smoothNoise(dt, 4.4) * Math.cos(_nT*0.3);
 
@@ -366,47 +367,49 @@ function applyStroke(ax1,ay1,ax2,ay2){
 
   if(tool==='pencil'){
     ctx.save();
-    ctx.strokeStyle=color; ctx.lineWidth=size;
+    ctx.strokeStyle=color;
+    ctx.lineWidth=Math.max(2, size);
     ctx.lineCap='round'; ctx.lineJoin='round'; ctx.globalAlpha=1;
     ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
     ctx.restore();
   } else if(tool==='brush'){
     const len=Math.hypot(x2-x1,y2-y1);
-    const steps=Math.max(1,Math.round(len/1.5));
-    ctx.save(); ctx.fillStyle=color; ctx.globalAlpha=0.10;
+    const steps=Math.max(1,Math.round(len/2));
+    const r=Math.max(3, size*2.2);
+    ctx.save(); ctx.fillStyle=color; ctx.globalAlpha=0.22;
     for(let i=0;i<=steps;i++){
       const t=steps?i/steps:0;
       ctx.beginPath();
-      ctx.arc(lerp(x1,x2,t),lerp(y1,y2,t),size*2.8,0,Math.PI*2);
+      ctx.arc(lerp(x1,x2,t),lerp(y1,y2,t),r,0,Math.PI*2);
       ctx.fill();
     }
     ctx.restore();
   } else if(tool==='spray'){
     const len=Math.hypot(x2-x1,y2-y1);
-    const steps=Math.max(1,Math.round(len/4));
+    const steps=Math.max(1,Math.round(len/5));
     ctx.save(); ctx.fillStyle=color;
     for(let i=0;i<=steps;i++){
       const t=steps?i/steps:0;
       const bx=lerp(x1,x2,t), by=lerp(y1,y2,t);
-      for(let j=0;j<12;j++){
-        const a=Math.random()*Math.PI*2, r=Math.random()*size*5.5;
-        ctx.globalAlpha=Math.random()*0.55+0.1;
+      for(let j=0;j<10;j++){
+        const a=Math.random()*Math.PI*2, r=Math.random()*size*5;
+        ctx.globalAlpha=Math.random()*0.6+0.15;
         ctx.beginPath();
-        ctx.arc(bx+Math.cos(a)*r, by+Math.sin(a)*r, Math.random()*1.8+0.3, 0, Math.PI*2);
+        ctx.arc(bx+Math.cos(a)*r, by+Math.sin(a)*r, Math.random()*1.5+0.5, 0, Math.PI*2);
         ctx.fill();
       }
     }
     ctx.restore();
   } else if(tool==='callig'){
     const len=Math.hypot(x2-x1,y2-y1);
-    const steps=Math.max(1,Math.round(len));
-    ctx.save(); ctx.fillStyle=color; ctx.globalAlpha=0.92;
+    const steps=Math.max(1,Math.round(len/1.5));
+    ctx.save(); ctx.fillStyle=color; ctx.globalAlpha=0.95;
     for(let i=0;i<=steps;i++){
       const t=steps?i/steps:0;
       ctx.save();
       ctx.translate(lerp(x1,x2,t), lerp(y1,y2,t));
       ctx.rotate(Math.PI/4.2);
-      ctx.fillRect(-size*1.8,-size*.35,size*3.6,size*.7);
+      ctx.fillRect(-size*2.2,-size*.5,size*4.4,size);
       ctx.restore();
     }
     ctx.restore();
@@ -442,12 +445,34 @@ let textCursor=null; // {x,y,h} in canvas pixels — the blinking insertion care
 function drawMarchingAnts(){
   if(!selRect) return;
   selCtx.clearRect(0,0,CW,CH);
+  const {x,y,w,h}=selRect;
   selCtx.save();
-  selCtx.strokeStyle='#000'; selCtx.lineWidth=1;
-  selCtx.setLineDash([6,4]); selCtx.lineDashOffset=-dashOff;
-  selCtx.strokeRect(selRect.x+.5,selRect.y+.5,selRect.w,selRect.h);
-  selCtx.strokeStyle='#fff'; selCtx.lineDashOffset=-dashOff+5;
-  selCtx.strokeRect(selRect.x+.5,selRect.y+.5,selRect.w,selRect.h);
+
+  // White layer then black dashed — gives marching ant look on any background
+  selCtx.setLineDash([5,5]);
+  selCtx.lineWidth=1;
+  selCtx.strokeStyle='#fff';
+  selCtx.lineDashOffset=-dashOff;
+  selCtx.strokeRect(x+.5,y+.5,w,h);
+  selCtx.strokeStyle='#000';
+  selCtx.lineDashOffset=-dashOff+5;
+  selCtx.strokeRect(x+.5,y+.5,w,h);
+
+  // 8 resize handles: 4 corners + 4 edge midpoints
+  const HS=6; // handle size px
+  const handles=[
+    [x,     y      ],[x+w/2, y      ],[x+w,   y      ],
+    [x,     y+h/2  ],                 [x+w,   y+h/2  ],
+    [x,     y+h    ],[x+w/2, y+h    ],[x+w,   y+h    ],
+  ];
+  selCtx.setLineDash([]);
+  handles.forEach(([hx,hy])=>{
+    selCtx.fillStyle='#fff';
+    selCtx.fillRect(hx-HS/2, hy-HS/2, HS, HS);
+    selCtx.strokeStyle='#555';
+    selCtx.lineWidth=1;
+    selCtx.strokeRect(hx-HS/2+.5, hy-HS/2+.5, HS-1, HS-1);
+  });
   selCtx.restore();
 }
 
@@ -471,7 +496,7 @@ async function moveToC(cx,cy,spd=2500){
   const p=cvToApp(cx,cy); await moveTo(p.x,p.y,spd);
 }
 // Draw along canvas-pixel path — lifts pen, moves to start, then draws
-async function drawPath(pts, spd=260){
+async function drawPath(pts, spd=1600){
   if(!pts.length) return;
   const {ox,oy}=canvasOffset();
   // Move to stroke start (pen up) — arc travel
@@ -481,9 +506,9 @@ async function drawPath(pts, spd=260){
   await waitIdle();
   // Tiny hesitation before pen touches paper
   await sleep(rand(4,18));
-  // Draw the stroke (pen down)
+  // Draw the stroke (pen down, fast=true skips easing)
   if(pts.length>1)
-    cur.enqueue(pts.slice(1).map(p=>({x:p.x+ox,y:p.y+oy})), spd, true);
+    cur.enqueue(pts.slice(1).map(p=>({x:p.x+ox,y:p.y+oy,fast:true})), spd, true);
   await waitIdle();
   // Micro-stutter after stroke: rare brief stop
   if(Math.random()<0.10) await sleep(rand(10,30));
@@ -512,7 +537,7 @@ async function drawWordStrokes(letterH, spc=0.18){
   for(const ch of WORD){
     const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
     const paths=letterCanvasPaths(ch,cx,startY,letterH);
-    const spd = cur.tool==='spray'?420 : cur.tool==='brush'?220 : cur.tool==='callig'?260 : 310;
+    const spd = cur.tool==='spray'?1800 : cur.tool==='brush'?1200 : cur.tool==='callig'?1400 : 1600;
     for(const p of paths){
       await drawPath(p, spd);
       await sleep(rand(8,35));
@@ -534,7 +559,7 @@ async function drawWordTwoLines(letterH, spc=0.18){
     for(const ch of line){
       const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
       const paths=letterCanvasPaths(ch,cx,startY,letterH);
-      const spd=cur.tool==='spray'?420:cur.tool==='brush'?220:300;
+      const spd=cur.tool==='spray'?1800:cur.tool==='brush'?1200:1400;
       for(const p of paths){ await drawPath(p,spd); await sleep(rand(8,30)); }
       cx+=d.w*letterH+spc*letterH;
       await sleep(rand(20,70));
@@ -723,8 +748,8 @@ async function runCycle(){
   // --- Randomize style ---
   const useBubble = Math.random()<0.28;
   const scheme    = pick(SCHEMES);
-  const letterH   = randInt(40,68);
-  const twoLines  = letterH>52 && Math.random()<0.4;
+  const letterH   = randInt(55,88);
+  const twoLines  = letterH>68 && Math.random()<0.5;
 
   if(useBubble){
     // --- TEXT TOOL ---
@@ -736,9 +761,9 @@ async function runCycle(){
   } else {
     // --- STROKE-BASED ---
     const tool=pick(TOOLS_STROKE);
-    const size = tool==='pencil'?randInt(1,3):
-                 tool==='callig'?randInt(2,5):
-                 tool==='spray'?randInt(2,4):randInt(2,6);
+    const size = tool==='pencil'?randInt(2,4):
+                 tool==='callig'?randInt(3,6):
+                 tool==='spray'?randInt(3,5):randInt(3,7);
 
     const darkColors=PAL.filter(c=>c!=='#ffffff'&&c!=='#c0c0c0'&&c!=='#aaffaa'&&c!=='#ffaacc');
     const color=pick(darkColors);
@@ -798,7 +823,7 @@ async function runCycle(){
     const y=CH*rand(0.7,0.85);
     const pts=[{x:CW*0.1,y},{x:CW*0.45,y:y+rand(-3,3)},{x:CW*0.9,y:y+rand(-5,5)}];
     const splined=catmullSample(pts.map(p=>[p.x,p.y]),80);
-    await drawPath(splined.slice(0,splined.length), 340);
+    await drawPath(splined.slice(0,splined.length), 1800);
   }
 
   // --- Admire ---
