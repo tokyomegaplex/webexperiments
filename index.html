@@ -568,18 +568,17 @@ async function pickColor(hex){
 
 
 // ── Draw word stroke-by-stroke ─────────────────────────────────────────
-async function drawWordStrokes(letterH, spc=0.18){
+async function drawWordStrokes(letterH, spc=0.18, startX=null, startY=null){
   const tw=wordTotalWidth(letterH,spc);
-  const startX=Math.max(10,(CW-tw)/2);
-  // vertical center, account for descenders in 'g'
-  const startY=(CH-letterH)/2 - letterH*0.1;
-  let cx=startX;
+  const sx = startX !== null ? startX : Math.max(10,(CW-tw)/2);
+  const sy = startY !== null ? startY : (CH-letterH)/2 - letterH*0.1;
+  let cx=sx;
   for(const ch of WORD){
     const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
     // Per-letter: slight size wobble + baseline drift = hand-drawn feel
     const lh=letterH*rand(0.93,1.07);
     const baseWobble=rand(-letterH*0.06,letterH*0.06);
-    const paths=letterCanvasPaths(ch,cx,startY+baseWobble,lh);
+    const paths=letterCanvasPaths(ch,cx,sy+baseWobble,lh);
     const spd = cur.tool==='spray'?5000 : cur.tool==='brush'?4000 : cur.tool==='callig'?4500 : cur.tool==='shade'?4000 : 5000;
     for(const p of paths){
       await drawPath(p, spd);
@@ -643,8 +642,8 @@ async function drawWithTextTool(scheme, letterH){
   totalW-=KERN;
   ctx.restore();
 
-  const textX=Math.max(12, (CW-totalW)/2);
-  const baseY=CH*0.60;
+  const textX=Math.max(12, rand(10, Math.max(12, CW-totalW-10)));
+  const baseY=rand(letterH*1.1, CH-letterH*0.4);
   const caretTop=baseY-letterH*0.92;
   const caretH=letterH*1.1;
 
@@ -817,11 +816,15 @@ async function runCycle(){
     cur.setSize(size);
     await sleep(20);
 
+    // Random position across canvas
+    const tw=wordTotalWidth(letterH);
+    const rx=rand(10, Math.max(12, CW-tw-10));
+    const ry=rand(letterH*0.2, CH-letterH*1.3);
     stAct.textContent='Writing ('+tool+')...';
-    await drawWordStrokes(letterH);
+    await drawWordStrokes(letterH, 0.18, rx, ry);
   }
 
-  // --- Maybe do a second pass in different color ---
+  // --- Maybe a second pass at different size/position ---
   if(Math.random()<0.35){
     const tool2=pick(TOOLS_STROKE);
     const scheme2=pick(SCHEMES);
@@ -831,67 +834,16 @@ async function runCycle(){
     await pickColor(scheme2.fill);
     cur.setSize(size2);
     await sleep(15);
-    const h2=randInt(30,55);
-    await drawWordStrokes(h2, 0.22);
+    const h2=randInt(25,48);
+    const tw2=wordTotalWidth(h2);
+    const rx2=rand(10, Math.max(12, CW-tw2-10));
+    const ry2=rand(h2*0.2, CH-h2*1.3);
+    await drawWordStrokes(h2, 0.22, rx2, ry2);
   }
 
-  // --- Maybe bucket fill ---
-  if(Math.random()<0.55){
-    const fillC=pick(PAL.filter(c=>c!=='#000000'&&c!=='#808080'&&c!=='#ffffff'));
-    stAct.textContent='Filling...';
-    await doBucketFill(fillC);
-    await sleep(40);
-    // Sometimes a second fill with different color
-    if(Math.random()<0.4){
-      const fillC2=pick(PAL.filter(c=>c!==fillC&&c!=='#000000'&&c!=='#ffffff'));
-      await doBucketFill(fillC2);
-    }
-  }
-
-  // --- Maybe select + transform ---
-  if(Math.random()<0.3){
-    stAct.textContent='Selecting & transforming...';
-    await doSelectTransform();
-  }
-
-  // --- Maybe write small annotation ---
-  if(Math.random()<0.25){
-    const tool3='pencil';
-    stAct.textContent='Adding detail...';
-    await switchTool(tool3);
-    await pickColor(pick(PAL.filter(c=>c!=='#ffffff')));
-    cur.setSize(1);
-    // Small underline or accent stroke across canvas
-    const y=CH*rand(0.7,0.85);
-    const pts=[{x:CW*0.1,y},{x:CW*0.45,y:y+rand(-3,3)},{x:CW*0.9,y:y+rand(-5,5)}];
-    const splined=catmullSample(pts.map(p=>[p.x,p.y]),80);
-    await drawPath(splined.slice(0,splined.length), 1800);
-  }
-
-  // --- Admire ---
-  stAct.textContent='Admiring...';
-  await moveTo(cwrap.getBoundingClientRect().left-app.getBoundingClientRect().left+CW/2,
-               cwrap.getBoundingClientRect().top -app.getBoundingClientRect().top +CH/2, 1800);
-  await sleep(rand(400,1000));
-
-  // --- Clear ---
-  stAct.textContent='Clearing canvas...';
-  const menuE=document.getElementById('menu-edit');
-  await moveTo(...Object.values(elCenter(menuE)),2800);
-  menuE.classList.add('open');
-  await sleep(80);
-  menuE.classList.remove('open');
-
-  // Quick fade clear
-  for(let a=0;a<5;a++){
-    ctx.fillStyle='rgba(255,255,255,0.35)';
-    ctx.fillRect(0,0,CW,CH);
-    await sleep(18);
-  }
-  ctx.clearRect(0,0,CW,CH);
-  ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,CW,CH);
-  selRect=null; textCursor=null; selCtx.clearRect(0,0,CW,CH);
-  await sleep(80);
+  // --- Admire briefly ---
+  stAct.textContent='...';
+  await sleep(rand(200,600));
 }
 
 async function directorLoop(){
