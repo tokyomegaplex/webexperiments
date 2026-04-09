@@ -137,18 +137,18 @@ const stAct  = document.getElementById('st-act');
 const CW = canvas.width, CH = canvas.height;
 
 // ── Letter stroke paths ────────────────────────────────────────────────
-// x in [0, letter.w], y in [0,1] (baseline=1), descenders go beyond 1
+// x in [0, letter.w], y in [0,1] (baseline=1)
 const STROKES = {
-  a:{w:.65,s:[[[.62,.27],[.50,.08],[.28,.07],[.10,.24],[.08,.50],[.12,.76],[.32,.93],[.55,.91],[.65,.73],[.65,.48],[.62,.27],[.62,.93]]]},
-  m:{w:.95,s:[[[.08,.93],[.08,.30]],[[.08,.30],[.14,.12],[.30,.08],[.45,.18],[.48,.36],[.48,.93]],[[.48,.36],[.55,.12],[.71,.08],[.86,.18],[.88,.36],[.88,.93]]]},
-  l:{w:.30,s:[[[.50,.04],[.48,.30],[.46,.65],[.46,.93]]]},
-  g:{w:.70,s:[[[.62,.27],[.50,.08],[.28,.07],[.10,.24],[.08,.50],[.12,.76],[.32,.93],[.55,.91],[.65,.73],[.65,.48],[.62,.27],[.65,.93],[.65,1.18],[.55,1.35],[.35,1.38],[.15,1.28],[.08,1.12]]]},
-  t:{w:.52,s:[[[.50,.04],[.50,.36],[.50,.70],[.48,.93]],[[.10,.40],[.30,.37],[.50,.35],[.72,.37],[.92,.40]]]},
-  i:{w:.28,s:[[[.50,.10],[.53,.08],[.56,.11],[.52,.14],[.50,.10]],[[.50,.29],[.50,.61],[.50,.93]]]},
-  o:{w:.65,s:[[[.50,.08],[.72,.10],[.88,.28],[.91,.50],[.88,.73],[.71,.91],[.50,.93],[.28,.91],[.12,.73],[.10,.50],[.12,.28],[.28,.10],[.50,.08]]]},
-  n:{w:.65,s:[[[.08,.93],[.08,.50],[.08,.28],[.18,.12],[.38,.08],[.58,.15],[.68,.35],[.71,.62],[.71,.93]]]}
+  A:{w:.72,s:[[[.50,.04],[.08,.95]],[[.50,.04],[.92,.95]],[[.20,.58],[.80,.58]]]},
+  M:{w:.96,s:[[[.08,.95],[.08,.05],[.50,.50],[.92,.05],[.92,.95]]]},
+  L:{w:.58,s:[[[.18,.05],[.18,.95],[.90,.95]]]},
+  G:{w:.76,s:[[[.92,.24],[.72,.07],[.46,.04],[.20,.16],[.07,.40],[.06,.64],[.16,.84],[.40,.96],[.66,.95],[.88,.80],[.92,.60],[.54,.60]]]},
+  T:{w:.72,s:[[[.04,.07],[.96,.07]],[[.50,.07],[.50,.95]]]},
+  I:{w:.46,s:[[[.12,.07],[.88,.07]],[[.50,.07],[.50,.95]],[[.12,.95],[.88,.95]]]},
+  O:{w:.72,s:[[[.50,.04],[.82,.09],[.96,.30],[.96,.56],[.88,.78],[.68,.94],[.50,.97],[.30,.94],[.12,.78],[.04,.56],[.04,.30],[.18,.09],[.50,.04]]]},
+  N:{w:.72,s:[[[.08,.95],[.08,.06],[.90,.92],[.90,.06]]]}
 };
-const WORD = 'amalgamation';
+const WORD = 'AMALGAMATION';
 
 // ── Math helpers ───────────────────────────────────────────────────────
 const lerp=(a,b,t)=>a+(b-a)*t;
@@ -427,17 +427,17 @@ function applyStroke(ax1,ay1,ax2,ay2){
     const steps=Math.max(1,Math.round(len/3));
     const r=Math.max(6, size*3.5);
     const [cr2,cg2,cb2]=hexToRgb(color);
-    const dr=Math.max(0,cr2-70), dg=Math.max(0,cg2-70), db=Math.max(0,cb2-70);
+    const dr=Math.max(0,cr2-45), dg=Math.max(0,cg2-45), db=Math.max(0,cb2-45);
     ctx.save();
     for(let i=0;i<=steps;i++){
       const t=steps?i/steps:0;
       const bx=lerp(x1,x2,t), by=lerp(y1,y2,t);
-      const grd=ctx.createRadialGradient(bx-r*0.3,by-r*0.3,0,bx,by,r);
-      grd.addColorStop(0,   'rgba(255,255,255,0.85)');
-      grd.addColorStop(0.25, color);
-      grd.addColorStop(0.70, `rgb(${dr},${dg},${db})`);
-      grd.addColorStop(1,   'rgba(0,0,0,0)');
-      ctx.globalAlpha=0.88;
+      const grd=ctx.createRadialGradient(bx-r*0.32,by-r*0.32,r*0.02,bx,by,r);
+      grd.addColorStop(0,    'rgba(255,255,255,0.75)');
+      grd.addColorStop(0.22,  color);
+      grd.addColorStop(0.65, `rgba(${dr},${dg},${db},0.9)`);
+      grd.addColorStop(1,    `rgba(${dr},${dg},${db},0)`); // fade to same color, not black
+      ctx.globalAlpha=0.90;
       ctx.fillStyle=grd;
       ctx.beginPath(); ctx.arc(bx,by,r,0,Math.PI*2); ctx.fill();
     }
@@ -791,8 +791,7 @@ async function runCycle(){
   // --- Randomize style ---
   const useBubble = Math.random()<0.28;
   const scheme    = pick(SCHEMES);
-  const letterH   = randInt(55,88);
-  const twoLines  = letterH>68 && Math.random()<0.5;
+  const letterH   = randInt(50,65); // capped so AMALGAMATION fits on one line
 
   if(useBubble){
     // --- TEXT TOOL ---
@@ -818,8 +817,7 @@ async function runCycle(){
     await sleep(20);
 
     stAct.textContent='Writing ('+tool+')...';
-    if(twoLines) await drawWordTwoLines(letterH);
-    else         await drawWordStrokes(letterH);
+    await drawWordStrokes(letterH);
   }
 
   // --- Maybe do a second pass in different color ---
