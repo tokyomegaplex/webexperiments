@@ -2,329 +2,408 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>3D Text Editor – Amalgamation</title>
+<title>AMALGAMATION – 3D Editor</title>
 <style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background:#08081a; overflow:hidden; }
-canvas { display:block; }
-#ui {
-  position:fixed; top:14px; left:16px;
-  color:#667799; font:11px/2 monospace;
-  pointer-events:none;
-}
-#ui b { color:#99ccff; }
-#cur {
-  position:fixed; pointer-events:none; z-index:10;
-  width:20px; height:20px; transform:translate(-2px,-2px);
-}
+  * { margin:0; padding:0; box-sizing:border-box }
+  body { background:#16161e; overflow:hidden }
+  #ui {
+    position:fixed; top:14px; left:16px; z-index:10;
+    color:#555; font:11px/1.9 'Courier New',monospace;
+    pointer-events:none;
+    text-shadow:0 1px 3px #000;
+  }
+  #ui b { color:#bbb }
+  #cur {
+    position:fixed; z-index:100; pointer-events:none;
+    width:24px; height:24px; transform:translate(-3px,-2px);
+    filter:drop-shadow(0 1px 4px rgba(0,0,0,.9));
+  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<svg id="cur" viewBox="0 0 20 20">
-  <polygon points="3,2 3,16 7,12 9,18 12,17 10,11 14,11"
-           fill="#fff" stroke="#222" stroke-width="0.8"/>
+<svg id="cur" viewBox="0 0 24 24">
+  <polygon points="4,2 4,19 8,15 10.5,21 13.5,19.5 11,13.5 16,13.5"
+    fill="#fff" stroke="#111" stroke-width="1.2" stroke-linejoin="round"/>
 </svg>
-<div id="ui">3D Text Editor<br>Action: <b id="act">loading…</b>&nbsp;&nbsp;Letter: <b id="let">—</b></div>
+<div id="ui">
+  3D TEXT EDITOR &nbsp;·&nbsp; Mode: <b id="modeEl">—</b> &nbsp;·&nbsp; Letter: <b id="ltEl">—</b>
+</div>
 
-<script>
-// ─── Canvas / GL setup ───────────────────────────────────────────────────────
-const C = document.getElementById('c');
-const gl = C.getContext('webgl2') || C.getContext('webgl');
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { FontLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FontLoader.js';
+import { TextGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/TextGeometry.js';
 
-// We'll do all rendering on a 2D offscreen canvas via CSS-3D perspective,
-// but use real WebGL for the metallic shaded letter geometry.
+// ── Constants ─────────────────────────────────────────────────────────────────
+const Y_UP = new THREE.Vector3(0,1,0);
+const COL  = { x:0xee3333, y:0x33dd55, z:0x3399ff, hi:0xffee00, w:0xffffff };
+const GSCALE = 1.9; // world-space gizmo size
 
-// Actually we'll do a pure-CSS3D + SVG text approach so zero dependencies.
-// Each letter is a <div> that we translate/rotate/scale in 3D.
+// ── Renderer ─────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.autoClear = false;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
 
-// ─── Build the stage ─────────────────────────────────────────────────────────
-C.style.display = 'none'; // not using raw webgl – using CSS 3D instead
+// ── Scenes ────────────────────────────────────────────────────────────────────
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0x16161e);
+scene.fog = new THREE.FogExp2(0x16161e, 0.016);
 
-const stage = document.createElement('div');
-Object.assign(stage.style, {
-  position:'fixed', top:0, left:0,
-  width:'100vw', height:'100vh',
-  perspective:'800px', perspectiveOrigin:'50% 45%',
-  overflow:'hidden',
-});
-document.body.appendChild(stage);
+const gScene = new THREE.Scene(); // gizmo – rendered after depth clear
 
-// Starfield
-const stars = document.createElement('canvas');
-stars.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;';
-stage.insertBefore(stars, stage.firstChild);
-function drawStars() {
-  stars.width = innerWidth; stars.height = innerHeight;
-  const ctx = stars.getContext('2d');
-  ctx.fillStyle = '#08081a';
-  ctx.fillRect(0,0,innerWidth,innerHeight);
-  for (let i=0;i<200;i++) {
-    const x=Math.random()*innerWidth, y=Math.random()*innerHeight;
-    const r=Math.random()*1.2;
-    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
-    ctx.fillStyle=`rgba(180,200,255,${Math.random()*0.7+0.1})`;
-    ctx.fill();
-  }
-  // Grid lines at bottom
-  ctx.strokeStyle='rgba(30,40,80,0.6)'; ctx.lineWidth=1;
-  const gY = innerHeight*0.78;
-  for (let x=0;x<innerWidth;x+=40) {
-    ctx.beginPath(); ctx.moveTo(x,gY); ctx.lineTo(innerWidth/2, gY-80);
-    ctx.stroke();
-  }
+// ── Camera ────────────────────────────────────────────────────────────────────
+const camera = new THREE.PerspectiveCamera(48, innerWidth/innerHeight, 0.1, 500);
+camera.position.set(0, 3.5, 30);
+camera.lookAt(0, 0.5, 0);
+
+// ── Lights ────────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0x223366, 0.7));
+const sun = new THREE.DirectionalLight(0xffffff, 2.5);
+sun.position.set(6,12,8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera, {left:-25,right:25,top:12,bottom:-12,near:1,far:80});
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0x4466ff, 1.0); fill.position.set(-10,4,3); scene.add(fill);
+const rim  = new THREE.DirectionalLight(0xff5500, 0.6); rim.position.set(3,-6,-10); scene.add(rim);
+
+// ── Floor / grid ─────────────────────────────────────────────────────────────
+const grid = new THREE.GridHelper(100,60,0x2a2a3a,0x222232);
+grid.position.y = -3.8; scene.add(grid);
+const floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(100,100), new THREE.ShadowMaterial({opacity:.25}));
+floorMesh.rotation.x = -Math.PI/2; floorMesh.position.y = -3.8; floorMesh.receiveShadow = true;
+scene.add(floorMesh);
+
+// ── Gizmo material factory ────────────────────────────────────────────────────
+function gMat(color, {opacity=1, side=THREE.FrontSide, transparent=false}={}) {
+  return new THREE.MeshBasicMaterial({ color, transparent: transparent||opacity<1, opacity, side });
 }
-drawStars();
-window.addEventListener('resize', drawStars);
 
-// ─── 3-D scene container (CSS transform-style: preserve-3d) ─────────────────
-const scene = document.createElement('div');
-Object.assign(scene.style, {
-  position:'absolute',
-  top:'45%', left:'50%',
-  transformStyle:'preserve-3d',
-  transform:'translate(-50%,-50%) rotateX(8deg)',
-  transition:'none',
-});
-stage.appendChild(scene);
+// ── Translate gizmo ───────────────────────────────────────────────────────────
+function buildTranslate() {
+  const root = new THREE.Group();
+  const axes = [
+    {key:'x', dir:new THREE.Vector3(1,0,0), color:COL.x},
+    {key:'y', dir:new THREE.Vector3(0,1,0), color:COL.y},
+    {key:'z', dir:new THREE.Vector3(0,0,1), color:COL.z},
+  ];
+  const hPos = {}, hMesh = {};
+  for (const {key,dir,color} of axes) {
+    const mat = gMat(color);
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,1.1,8), mat);
+    shaft.quaternion.setFromUnitVectors(Y_UP, dir);
+    shaft.position.copy(dir.clone().multiplyScalar(.55));
+    root.add(shaft);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(.075,.28,8), mat);
+    cone.quaternion.setFromUnitVectors(Y_UP, dir);
+    cone.position.copy(dir.clone().multiplyScalar(1.24));
+    root.add(cone);
+    hPos[key]  = dir.clone().multiplyScalar(1.4);
+    hMesh[key] = [shaft, cone];
+  }
+  // Plane-handle squares
+  [
+    {pos:new THREE.Vector3(.32,.32,0), n:new THREE.Vector3(0,0,1), c:0xffaa33},
+    {pos:new THREE.Vector3(.32,0,.32), n:new THREE.Vector3(0,1,0), c:0x33aaff},
+    {pos:new THREE.Vector3(0,.32,.32), n:new THREE.Vector3(1,0,0), c:0x99ff33},
+  ].forEach(({pos,n,c}) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(.22,.22), gMat(c,{opacity:.45,transparent:true,side:THREE.DoubleSide}));
+    m.position.copy(pos); m.lookAt(pos.clone().add(n)); root.add(m);
+  });
+  root.add(Object.assign(new THREE.Mesh(new THREE.SphereGeometry(.055,8,8), gMat(COL.w)), {}));
+  root.userData = {hPos, hMesh, type:'translate'};
+  return root;
+}
 
-// ─── Colour palette ──────────────────────────────────────────────────────────
-const PALETTE = [
-  '#7ec8ff','#88aaff','#aabbff','#ccaaff','#ffaaee',
-  '#ffbbaa','#aaffcc','#aaeecc','#eeffaa','#aaccff',
-  '#bbaaff','#ffccaa',
-];
+// ── Rotate gizmo ─────────────────────────────────────────────────────────────
+function buildRotate() {
+  const root = new THREE.Group();
+  // Each ring: rotation to align torus to correct plane
+  const rings = [
+    {key:'x', color:COL.x, rx:0,        ry:Math.PI/2, rz:0},  // YZ plane
+    {key:'y', color:COL.y, rx:Math.PI/2, ry:0,         rz:0},  // XZ plane
+    {key:'z', color:COL.z, rx:0,         ry:0,          rz:0},  // XY plane
+  ];
+  const hPos = {}, hMesh = {};
+  for (const {key,color,rx,ry,rz} of rings) {
+    const mat  = gMat(color);
+    const torus = new THREE.Mesh(new THREE.TorusGeometry(1.1,.026,8,56), mat);
+    torus.rotation.set(rx,ry,rz); root.add(torus);
 
-// ─── Letter class ────────────────────────────────────────────────────────────
+    // Small cone at ring's "north pole" to suggest rotation direction
+    const localTop = new THREE.Vector3(0,1.1,0).applyEuler(new THREE.Euler(rx,ry,rz));
+    const tangent  = new THREE.Vector3(1,0,0).applyEuler(new THREE.Euler(rx,ry,rz));
+    const coneM = new THREE.Mesh(new THREE.ConeGeometry(.055,.18,6), gMat(color));
+    coneM.position.copy(localTop);
+    coneM.quaternion.setFromUnitVectors(Y_UP, tangent.normalize());
+    root.add(coneM);
+
+    hPos[key]  = localTop.clone();
+    hMesh[key] = [torus, coneM];
+  }
+  root.add(new THREE.Mesh(new THREE.SphereGeometry(.045,8,8), gMat(COL.w,{opacity:.7,transparent:true})));
+  root.userData = {hPos, hMesh, type:'rotate'};
+  return root;
+}
+
+// ── Scale gizmo ───────────────────────────────────────────────────────────────
+function buildScale() {
+  const root  = new THREE.Group();
+  const axes  = [
+    {key:'x', dir:new THREE.Vector3(1,0,0), color:COL.x},
+    {key:'y', dir:new THREE.Vector3(0,1,0), color:COL.y},
+    {key:'z', dir:new THREE.Vector3(0,0,1), color:COL.z},
+  ];
+  const hPos = {}, hMesh = {};
+  for (const {key,dir,color} of axes) {
+    const mat   = gMat(color);
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,1.1,8), mat);
+    shaft.quaternion.setFromUnitVectors(Y_UP, dir);
+    shaft.position.copy(dir.clone().multiplyScalar(.55));
+    root.add(shaft);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(.13,.13,.13), mat);
+    box.position.copy(dir.clone().multiplyScalar(1.22));
+    root.add(box);
+    hPos[key]  = dir.clone().multiplyScalar(1.32);
+    hMesh[key] = [shaft, box];
+  }
+  root.add(new THREE.Mesh(new THREE.BoxGeometry(.1,.1,.1), gMat(COL.w)));
+  root.userData = {hPos, hMesh, type:'scale'};
+  return root;
+}
+
+// ── Active gizmo state ────────────────────────────────────────────────────────
+let gizmo = null;
+
+function showGizmo(type, worldPos) {
+  if (gizmo) gScene.remove(gizmo);
+  gizmo = type==='translate' ? buildTranslate()
+        : type==='rotate'    ? buildRotate()
+        :                      buildScale();
+  gizmo.position.copy(worldPos);
+  gizmo.scale.setScalar(GSCALE);
+  gScene.add(gizmo);
+}
+
+function moveGizmo(worldPos) { if (gizmo) gizmo.position.copy(worldPos); }
+
+function hideGizmo() { if (gizmo) { gScene.remove(gizmo); gizmo=null; } }
+
+function handleScreenPos(axisKey) {
+  if (!gizmo) return null;
+  const lp = gizmo.userData.hPos[axisKey];
+  if (!lp) return null;
+  const wp = gizmo.position.clone().add(lp.clone().multiplyScalar(GSCALE));
+  const v  = wp.clone().project(camera);
+  return { x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight };
+}
+
+function setHighlight(axisKey) {
+  if (!gizmo) return;
+  const {hMesh} = gizmo.userData;
+  Object.entries(hMesh).forEach(([k,ms]) => {
+    const c = k==='x'?COL.x : k==='y'?COL.y : COL.z;
+    ms.forEach(m => m.material.color.set(axisKey===k ? COL.hi : c));
+  });
+}
+
+function clearHighlight() { setHighlight('__none__'); }
+
+// ── Letters ───────────────────────────────────────────────────────────────────
 const WORD = 'amalgamation';
 const letters = [];
 
-// font-size in px
-const FS = 72;
-const GAP = 4;
-
-// Measure total width with a temp canvas
-function measureWord() {
-  const tmp = document.createElement('canvas').getContext('2d');
-  tmp.font = `900 ${FS}px 'Arial Black', Arial, sans-serif`;
-  let x = 0;
-  return WORD.split('').map(ch => {
-    const w = tmp.measureText(ch).width;
-    const out = { ch, x, w };
+function buildLetters(font) {
+  const FS = 1.7, GAP = 0.18;
+  const geos = []; let totalW = 0;
+  for (const ch of WORD) {
+    const geo = new TextGeometry(ch, {
+      font, size:FS, height:.55, curveSegments:8,
+      bevelEnabled:true, bevelThickness:.055, bevelSize:.035, bevelSegments:3,
+    });
+    geo.computeBoundingBox();
+    const w = geo.boundingBox.max.x - geo.boundingBox.min.x;
+    geos.push({geo, w}); totalW += w + GAP;
+  }
+  totalW -= GAP;
+  let x = -totalW/2;
+  WORD.split('').forEach((ch, i) => {
+    const {geo, w} = geos[i];
+    geo.center();
+    const hue = .60 + i*.013;
+    const mat = new THREE.MeshStandardMaterial({
+      color:     new THREE.Color().setHSL(hue,.55,.75),
+      metalness: .82, roughness: .14,
+      emissive:  new THREE.Color().setHSL(hue,.6,.12),
+      emissiveIntensity: .4,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    const hx   = x + w/2;
+    mesh.position.set(hx,0,0);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    scene.add(mesh);
+    const home = { pos:new THREE.Vector3(hx,0,0), rot:new THREE.Euler(), scale:new THREE.Vector3(1,1,1) };
+    letters.push({ mesh, ch, home, cur:{ pos:home.pos.clone(), rot:new THREE.Euler(), scale:new THREE.Vector3(1,1,1) } });
     x += w + GAP;
-    return out;
   });
 }
 
-const metrics = measureWord();
-const totalW = metrics[metrics.length-1].x + metrics[metrics.length-1].w;
-
-metrics.forEach((m, i) => {
-  const el = document.createElement('div');
-  const color = PALETTE[i % PALETTE.length];
-
-  Object.assign(el.style, {
-    position: 'absolute',
-    left: '0', top: '0',
-    font: `900 ${FS}px 'Arial Black', Arial, sans-serif`,
-    color: color,
-    textShadow: `0 0 20px ${color}88, 0 2px 0 #0004, 2px 0 0 #fff2`,
-    cursor: 'default',
-    userSelect: 'none',
-    whiteSpace: 'nowrap',
-    lineHeight: '1',
-    transformStyle: 'preserve-3d',
-    willChange: 'transform',
-    // start position: centred
-    transform: `translate3d(${m.x - totalW/2}px, ${-FS/2}px, 0px)`,
-  });
-  el.textContent = m.ch;
-  scene.appendChild(el);
-
-  letters.push({
-    el,
-    ch: m.ch,
-    color,
-    // "home" transform state
-    home: { tx: m.x - totalW/2, ty: -FS/2, tz: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1 },
-    // current interpolated state
-    cur:  { tx: m.x - totalW/2, ty: -FS/2, tz: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1 },
-  });
-});
-
-function applyTransform(l) {
-  const s = l.cur;
-  l.el.style.transform =
-    `translate3d(${s.tx}px,${s.ty}px,${s.tz}px) ` +
-    `rotateX(${s.rx}rad) rotateY(${s.ry}rad) rotateZ(${s.rz}rad) ` +
-    `scale3d(${s.sx},${s.sy},${s.sz})`;
-}
-
-// ─── Cursor ──────────────────────────────────────────────────────────────────
+// ── Cursor ────────────────────────────────────────────────────────────────────
 const curEl = document.getElementById('cur');
 let cx = innerWidth/2, cy = innerHeight/2;
+curEl.style.left = cx+'px'; curEl.style.top = cy+'px';
 
-function getCursorStyle() { return 'default'; }
+// ── Utils ─────────────────────────────────────────────────────────────────────
+const modeEl = document.getElementById('modeEl');
+const ltEl   = document.getElementById('ltEl');
+const rand = (a,b) => a+Math.random()*(b-a);
+const eio  = t => t<.5?2*t*t:-1+(4-2*t)*t;
+const lerp = (a,b,t) => a+(b-a)*t;
+const wait = ms => new Promise(r=>setTimeout(r,ms));
+const w2s  = v3 => { const v=v3.clone().project(camera); return {x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight}; };
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-const actEl = document.getElementById('act');
-const letEl = document.getElementById('let');
-
-function rand(a,b){ return a + Math.random()*(b-a); }
-function eio(t){ return t<.5?2*t*t:-1+(4-2*t)*t; }
-function lerp(a,b,t){ return a+(b-a)*t; }
-function wait(ms){ return new Promise(r=>setTimeout(r,ms)); }
-
-// 3-D project: get approximate screen coords for a letter's centre
-function screenOf(l) {
-  const s = l.cur;
-  // scene is centred at (50vw, 45vh), perspective 800px
-  // We skip the CSS perspective math and just use the current position + a rough projection
-  const fov = 800;
-  const depth = fov / (fov - s.tz);
-  return {
-    x: innerWidth/2  + s.tx * depth,
-    y: innerHeight*0.45 + (s.ty + FS/2) * depth,
-  };
-}
-
-// ─── Cursor movement (bezier with jitter) ────────────────────────────────────
-function moveCursor(tx, ty, dur) {
-  return new Promise(resolve => {
-    const sx=cx, sy=cy;
-    const dist = Math.hypot(tx-sx, ty-sy);
-    const cp1x = sx+(tx-sx)*0.3 + rand(-1,1)*dist*0.25;
-    const cp1y = sy+(ty-sy)*0.3 + rand(-1,1)*dist*0.25;
-    const cp2x = sx+(tx-sx)*0.7 + rand(-1,1)*dist*0.15;
-    const cp2y = sy+(ty-sy)*0.7 + rand(-1,1)*dist*0.15;
-    const t0 = performance.now();
-    function tick() {
-      const t = Math.min((performance.now()-t0)/(dur*1000), 1);
-      const e = eio(t);
-      const mt = 1-e;
-      cx = mt*mt*mt*sx + 3*mt*mt*e*cp1x + 3*mt*e*e*cp2x + e*e*e*tx;
-      cy = mt*mt*mt*sy + 3*mt*mt*e*cp1y + 3*mt*e*e*cp2y + e*e*e*ty;
-      // hand tremor
-      const jitter = (1-t)*2;
-      cx += rand(-jitter, jitter);
-      cy += rand(-jitter, jitter);
-      curEl.style.left = cx+'px';
-      curEl.style.top  = cy+'px';
-      if(t<1) requestAnimationFrame(tick); else resolve();
-    }
-    requestAnimationFrame(tick);
+function moveCursor(tx,ty,dur) {
+  return new Promise(res => {
+    const sx=cx,sy=cy, d=Math.hypot(tx-sx,ty-sy);
+    const c1x=sx+(tx-sx)*.3+rand(-1,1)*d*.2, c1y=sy+(ty-sy)*.3+rand(-1,1)*d*.2;
+    const c2x=sx+(tx-sx)*.7+rand(-1,1)*d*.12, c2y=sy+(ty-sy)*.7+rand(-1,1)*d*.12;
+    const t0=performance.now();
+    (function tick(){
+      const t=Math.min((performance.now()-t0)/(dur*1000),1), e=eio(t), m=1-e;
+      cx=m*m*m*sx+3*m*m*e*c1x+3*m*e*e*c2x+e*e*e*tx+(1-t)*rand(-1.5,1.5);
+      cy=m*m*m*sy+3*m*m*e*c1y+3*m*e*e*c2y+e*e*e*ty+(1-t)*rand(-1.5,1.5);
+      curEl.style.left=cx+'px'; curEl.style.top=cy+'px';
+      t<1 ? requestAnimationFrame(tick) : res();
+    })();
   });
 }
 
-// ─── Letter animation ─────────────────────────────────────────────────────────
-function animLetter(l, to, dur) {
-  return new Promise(resolve => {
-    const from = {...l.cur};
-    const t0 = performance.now();
-    function tick() {
-      const t = Math.min((performance.now()-t0)/(dur*1000), 1);
-      const e = eio(t);
-      for (const k of Object.keys(to)) {
-        l.cur[k] = lerp(from[k], to[k], e);
-      }
-      applyTransform(l);
-      // cursor follows letter (smooth lag)
-      if (t < 1) {
-        const sp = screenOf(l);
-        cx += (sp.x - cx) * 0.1;
-        cy += (sp.y - cy) * 0.1;
-        curEl.style.left = cx+'px';
-        curEl.style.top  = cy+'px';
+// ── Letter animation ─────────────────────────────────────────────────────────
+function animLetter(L, toPos, toRot, toScale, dur) {
+  return new Promise(res => {
+    const fp=L.cur.pos.clone(), fq=new THREE.Quaternion().setFromEuler(L.cur.rot);
+    const tq=new THREE.Quaternion().setFromEuler(toRot), fs=L.cur.scale.clone();
+    const t0=performance.now();
+    (function tick(){
+      const t=Math.min((performance.now()-t0)/(dur*1000),1), e=eio(t);
+      L.mesh.position.lerpVectors(fp,toPos,e);
+      L.mesh.quaternion.slerpQuaternions(fq,tq,e);
+      L.mesh.scale.lerpVectors(fs,toScale,e);
+      moveGizmo(L.mesh.position);
+      if (t<1) {
+        const sp=w2s(L.mesh.position);
+        cx+=(sp.x-cx)*.07; cy+=(sp.y-cy)*.07;
+        curEl.style.left=cx+'px'; curEl.style.top=cy+'px';
         requestAnimationFrame(tick);
       } else {
-        resolve();
+        L.cur.pos.copy(toPos); L.cur.rot.copy(toRot); L.cur.scale.copy(toScale);
+        res();
       }
-    }
-    requestAnimationFrame(tick);
+    })();
   });
 }
 
-// ─── Scene camera sway ───────────────────────────────────────────────────────
-let t0cam = performance.now();
-function swayScene() {
-  const t = (performance.now()-t0cam)/1000;
-  const ry = Math.sin(t*0.17)*8;
-  const rx = 8 + Math.sin(t*0.13)*3;
-  scene.style.transform =
-    `translate(-50%,-50%) rotateX(${rx}deg) rotateY(${ry}deg)`;
-  requestAnimationFrame(swayScene);
-}
-swayScene();
-
-// ─── Main sequence ────────────────────────────────────────────────────────────
-async function run() {
-  await wait(600);
-  const OPS = ['translate','rotate','scale','translate+rotate','translate+scale'];
-
+// ── Main sequence ─────────────────────────────────────────────────────────────
+async function runSequence() {
+  const TYPES = ['translate','rotate','scale'];
+  const AXES  = ['x','y','z'];
   while (true) {
-    const count = Math.floor(rand(3, 7));
-    const idxs = [...Array(letters.length).keys()]
-      .sort(()=>Math.random()-.5).slice(0, count);
+    const count = Math.floor(rand(3,6));
+    const idxs  = [...Array(letters.length).keys()].sort(()=>Math.random()-.5).slice(0,count);
 
     for (const idx of idxs) {
-      const l = letters[idx];
-      letEl.textContent = l.ch.toUpperCase();
-      actEl.textContent = 'selecting…';
+      const L = letters[idx];
+      ltEl.textContent = L.ch.toUpperCase();
 
-      // move cursor to letter
-      const sp = screenOf(l);
-      await moveCursor(sp.x + rand(-8,8), sp.y + rand(-8,8), rand(0.5,1.1));
-      await wait(rand(80,200));
+      // Move cursor to letter
+      const sp0 = w2s(L.cur.pos);
+      await moveCursor(sp0.x+rand(-12,12), sp0.y+rand(-12,12), rand(.5,1.0));
+      await wait(rand(60,140));
 
-      // click flash
-      l.el.style.textShadow = `0 0 40px #fff, 0 0 20px ${l.color}`;
-      await wait(80);
-      l.el.style.textShadow = `0 0 20px ${l.color}88, 0 2px 0 #0004, 2px 0 0 #fff2`;
+      // Click flash
+      L.mesh.material.emissiveIntensity = 2.0; await wait(70);
+      L.mesh.material.emissiveIntensity = 0.4;  await wait(90);
 
-      // pick operation
-      const op = OPS[Math.floor(Math.random()*OPS.length)];
-      actEl.textContent = op;
+      // Show gizmo
+      const type = TYPES[Math.floor(Math.random()*TYPES.length)];
+      modeEl.textContent = type[0].toUpperCase()+type.slice(1);
+      showGizmo(type, L.cur.pos.clone());
+      await wait(130);
 
-      const to = {...l.cur};
-      if (op.includes('translate')) {
-        to.tx += rand(-120, 120);
-        to.ty += rand(-80, 80);
-        to.tz += rand(-160, 160);
-      }
-      if (op.includes('rotate')) {
-        to.rx += rand(-Math.PI, Math.PI);
-        to.ry += rand(-Math.PI, Math.PI);
-        to.rz += rand(-0.8, 0.8);
-      }
-      if (op.includes('scale')) {
-        const s = rand(0.4, 2.4);
-        to.sx = s; to.sy = s; to.sz = s;
+      // Move cursor to gizmo handle
+      const axis = AXES[Math.floor(Math.random()*AXES.length)];
+      const hs = handleScreenPos(axis);
+      if (hs) {
+        await moveCursor(hs.x+rand(-5,5), hs.y+rand(-5,5), rand(.3,.65));
+        await wait(rand(55,110));
+        setHighlight(axis);
+        await wait(80);
       }
 
-      await animLetter(l, to, rand(0.7, 1.6));
-      // update cur state
-      Object.assign(l.cur, to);
-      await wait(rand(100, 320));
+      // Target transform
+      const toPos   = L.cur.pos.clone();
+      const toRot   = new THREE.Euler(L.cur.rot.x, L.cur.rot.y, L.cur.rot.z);
+      const toScale = L.cur.scale.clone();
+      if (type==='translate') {
+        toPos.x+=rand(-3.5,3.5); toPos.y+=rand(-1.5,2.5); toPos.z+=rand(-4,4);
+      } else if (type==='rotate') {
+        toRot.x+=rand(-Math.PI,Math.PI); toRot.y+=rand(-Math.PI,Math.PI); toRot.z+=rand(-.7,.7);
+      } else {
+        const s=rand(.45,2.3); toScale.set(s,s,s);
+      }
+
+      await animLetter(L, toPos, toRot, toScale, rand(.75,1.6));
+      clearHighlight();
+      await wait(rand(150,380));
     }
 
-    // Return home
-    actEl.textContent = 'reset'; letEl.textContent = '—';
-    await wait(350);
-
+    // Reset
+    modeEl.textContent='Reset'; ltEl.textContent='—';
     for (const idx of idxs) {
-      const l = letters[idx];
-      const sp = screenOf(l);
-      await moveCursor(sp.x + rand(-6,6), sp.y + rand(-6,6), rand(0.35, 0.7));
-      await animLetter(l, {...l.home}, rand(0.55, 1.0));
-      Object.assign(l.cur, l.home);
-      await wait(rand(50, 160));
+      const L = letters[idx];
+      hideGizmo(); showGizmo('translate', L.cur.pos.clone());
+      const sp=w2s(L.cur.pos);
+      await moveCursor(sp.x+rand(-8,8), sp.y+rand(-8,8), rand(.3,.6));
+      await animLetter(L, L.home.pos.clone(), new THREE.Euler(), new THREE.Vector3(1,1,1), rand(.55,1.0));
+      hideGizmo();
+      await wait(rand(55,150));
     }
-
-    await wait(rand(500, 1200));
+    await wait(rand(500,1100));
   }
 }
-run();
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+(function render(){
+  requestAnimationFrame(render);
+  const t = clock.getElapsedTime();
+  camera.position.x = Math.sin(t*.11)*2.8;
+  camera.position.y = 3.5+Math.sin(t*.08)*.8;
+  camera.lookAt(0,.5,0);
+  renderer.clear();
+  renderer.render(scene, camera);
+  renderer.clearDepth();       // gizmo always on top
+  renderer.render(gScene, camera);
+})();
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+new FontLoader().load(
+  'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_bold.typeface.json',
+  font => { buildLetters(font); setTimeout(runSequence, 800); }
+);
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
 </script>
 </body>
 </html>
