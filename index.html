@@ -90,6 +90,9 @@ canvas#c{background:#fff;display:block;box-shadow:1px 1px 0 #404040,2px 2px 0 #0
         <div class="tbtn" id="btn-text" title="Text">
           <svg viewBox="0 0 16 16"><path d="M3 13.5L8 2.5L13 13.5" stroke="#000" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/><line x1="5.5" y1="9.5" x2="10.5" y2="9.5" stroke="#000" stroke-width="1.4" stroke-linecap="round"/><line x1="14" y1="4" x2="14" y2="14" stroke="#000" stroke-width="1.4"/><line x1="12" y1="4" x2="16" y2="4" stroke="#000" stroke-width="1"/><line x1="12" y1="14" x2="16" y2="14" stroke="#000" stroke-width="1"/></svg>
         </div>
+        <div class="tbtn" id="btn-shade" title="Sphere Brush">
+          <svg viewBox="0 0 16 16"><defs><radialGradient id="sgb" cx="35%" cy="32%" r="65%"><stop offset="0%" stop-color="#fff" stop-opacity=".95"/><stop offset="35%" stop-color="#aaa"/><stop offset="80%" stop-color="#333"/><stop offset="100%" stop-color="#111"/></radialGradient></defs><circle cx="8" cy="8" r="7" fill="url(#sgb)" stroke="#000" stroke-width=".5"/></svg>
+        </div>
       </div>
       <div class="tdiv"></div>
       <div id="szpick">
@@ -263,7 +266,8 @@ const CSR = {
   callig: '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M2 19L13 2l4 3L6 21z" fill="#222" stroke="#000" stroke-width=".6"/><path d="M13 2l4 3" stroke="#888" stroke-width="1.2"/></svg>',
   bucket: '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M5 2L8 2L16 10L16 11.5L2 11.5Z" fill="#888" stroke="#000" stroke-width=".7"/><path d="M2 11.5L17 11.5L15 20L4 20Z" fill="#bbb" stroke="#000" stroke-width=".7"/><circle cx="20" cy="17" r="2.5" fill="#f44" stroke="#000" stroke-width=".5"/></svg>',
   select: '<svg width="18" height="22" viewBox="0 0 18 22"><path d="M2 1L2 13L6 9L8.5 15L11 14L8.5 8L14 8Z" fill="black" stroke="white" stroke-width="1" stroke-linejoin="round" paint-order="stroke"/></svg>',
-  text:   '<svg width="22" height="24" viewBox="0 0 22 24"><line x1="11" y1="2" x2="11" y2="22" stroke="white" stroke-width="3.5"/><line x1="5" y1="2" x2="17" y2="2" stroke="white" stroke-width="3"/><line x1="5" y1="22" x2="17" y2="22" stroke="white" stroke-width="3"/><line x1="11" y1="2" x2="11" y2="22" stroke="black" stroke-width="1.5"/><line x1="5" y1="2" x2="17" y2="2" stroke="black" stroke-width="1.5"/><line x1="5" y1="22" x2="17" y2="22" stroke="black" stroke-width="1.5"/></svg>'
+  text:   '<svg width="22" height="24" viewBox="0 0 22 24"><line x1="11" y1="2" x2="11" y2="22" stroke="white" stroke-width="3.5"/><line x1="5" y1="2" x2="17" y2="2" stroke="white" stroke-width="3"/><line x1="5" y1="22" x2="17" y2="22" stroke="white" stroke-width="3"/><line x1="11" y1="2" x2="11" y2="22" stroke="black" stroke-width="1.5"/><line x1="5" y1="2" x2="17" y2="2" stroke="black" stroke-width="1.5"/><line x1="5" y1="22" x2="17" y2="22" stroke="black" stroke-width="1.5"/></svg>',
+  shade:  '<svg width="22" height="22" viewBox="0 0 22 22"><defs><radialGradient id="csg" cx="35%" cy="32%" r="65%"><stop offset="0%" stop-color="#fff" stop-opacity=".9"/><stop offset="35%" stop-color="#aaa"/><stop offset="80%" stop-color="#333"/><stop offset="100%" stop-color="#111"/></radialGradient></defs><circle cx="11" cy="11" r="9" fill="url(#csg)" stroke="#000" stroke-width=".7"/></svg>'
 };
 
 // ── Cursor controller ─────────────────────────────────────────────────
@@ -413,11 +417,41 @@ function applyStroke(ax1,ay1,ax2,ay2){
       ctx.restore();
     }
     ctx.restore();
+  } else if(tool==='shade'){
+    // Sphere-shaded brush: each dab is a radial gradient with upper-left specular highlight
+    const len=Math.hypot(x2-x1,y2-y1);
+    const steps=Math.max(1,Math.round(len/3));
+    const r=Math.max(6, size*3.5);
+    const [cr2,cg2,cb2]=hexToRgb(color);
+    const dr=Math.max(0,cr2-70), dg=Math.max(0,cg2-70), db=Math.max(0,cb2-70);
+    ctx.save();
+    for(let i=0;i<=steps;i++){
+      const t=steps?i/steps:0;
+      const bx=lerp(x1,x2,t), by=lerp(y1,y2,t);
+      const grd=ctx.createRadialGradient(bx-r*0.3,by-r*0.3,0,bx,by,r);
+      grd.addColorStop(0,   'rgba(255,255,255,0.85)');
+      grd.addColorStop(0.25, color);
+      grd.addColorStop(0.70, `rgb(${dr},${dg},${db})`);
+      grd.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.globalAlpha=0.88;
+      ctx.fillStyle=grd;
+      ctx.beginPath(); ctx.arc(bx,by,r,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
   }
 }
 
 
 // ── Word layout helpers ───────────────────────────────────────────────
+// Add organic hand-tremor variation to normalized letter stroke points
+function jitterStroke(stroke, amt){
+  return stroke.map((pt,i)=>{
+    const edge=Math.min(i,stroke.length-1-i)/(stroke.length*0.25+1);
+    const f=Math.min(1,edge);
+    return [pt[0]+(Math.random()-.5)*2*amt*f, pt[1]+(Math.random()-.5)*2*amt*f*0.7];
+  });
+}
+
 function wordTotalWidth(h, spc=0.18){
   let w=0;
   for(const ch of WORD){
@@ -428,12 +462,14 @@ function wordTotalWidth(h, spc=0.18){
 }
 
 // Get canvas [x,y] points for each stroke of a letter, given origin
-function letterCanvasPaths(ch, ox, oy, h){
+// jitter adds hand-drawn irregularity (normalized units, 0=none)
+function letterCanvasPaths(ch, ox, oy, h, jitter=0.038){
   const d=STROKES[ch]; if(!d) return [];
   const lw=d.w*h;
-  return d.s.map(stroke=>
-    catmullSample(stroke,60).map(p=>({x:ox+p.x*lw, y:oy+p.y*h}))
-  );
+  return d.s.map(stroke=>{
+    const jit=jitter>0 ? jitterStroke(stroke,jitter) : stroke;
+    return catmullSample(jit,60).map(p=>({x:ox+p.x*lw, y:oy+p.y*h}));
+  });
 }
 
 // ── Selection / transform state ───────────────────────────────────────
@@ -536,13 +572,16 @@ async function drawWordStrokes(letterH, spc=0.18){
   let cx=startX;
   for(const ch of WORD){
     const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
-    const paths=letterCanvasPaths(ch,cx,startY,letterH);
-    const spd = cur.tool==='spray'?1800 : cur.tool==='brush'?1200 : cur.tool==='callig'?1400 : 1600;
+    // Per-letter: slight size wobble + baseline drift = hand-drawn feel
+    const lh=letterH*rand(0.93,1.07);
+    const baseWobble=rand(-letterH*0.06,letterH*0.06);
+    const paths=letterCanvasPaths(ch,cx,startY+baseWobble,lh);
+    const spd = cur.tool==='spray'?1800 : cur.tool==='brush'?1200 : cur.tool==='callig'?1400 : cur.tool==='shade'?1200 : 1600;
     for(const p of paths){
       await drawPath(p, spd);
       await sleep(rand(8,35));
     }
-    cx+=d.w*letterH+spc*letterH;
+    cx+=d.w*lh+spc*letterH;
     await sleep(rand(25,80));
   }
 }
@@ -559,7 +598,7 @@ async function drawWordTwoLines(letterH, spc=0.18){
     for(const ch of line){
       const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
       const paths=letterCanvasPaths(ch,cx,startY,letterH);
-      const spd=cur.tool==='spray'?1800:cur.tool==='brush'?1200:1400;
+      const spd=cur.tool==='spray'?1800:cur.tool==='brush'?1200:cur.tool==='shade'?1200:1400;
       for(const p of paths){ await drawPath(p,spd); await sleep(rand(8,30)); }
       cx+=d.w*letterH+spc*letterH;
       await sleep(rand(20,70));
@@ -738,7 +777,7 @@ async function doSelectTransform(){
 
 
 // ── Main director loop ────────────────────────────────────────────────
-const TOOLS_STROKE=['pencil','brush','spray','callig'];
+const TOOLS_STROKE=['pencil','brush','spray','callig','shade'];
 let cycleNum=0;
 
 async function runCycle(){
