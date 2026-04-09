@@ -86,6 +86,11 @@ canvas#c{background:#fff;display:block;box-shadow:1px 1px 0 #404040,2px 2px 0 #0
           <svg viewBox="0 0 16 16"><path d="M5 1l2 0 6 6v1.5H2V7z" fill="#888" stroke="#000" stroke-width=".7"/><path d="M2 8.5h11.5l-1.5 7h-8z" fill="#bbb" stroke="#000" stroke-width=".7"/><circle cx="14.5" cy="13" r="1.8" fill="#f44"/></svg>
         </div>
       </div>
+      <div class="trow">
+        <div class="tbtn" id="btn-text" title="Text">
+          <svg viewBox="0 0 16 16"><path d="M3 13.5L8 2.5L13 13.5" stroke="#000" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/><line x1="5.5" y1="9.5" x2="10.5" y2="9.5" stroke="#000" stroke-width="1.4" stroke-linecap="round"/><line x1="14" y1="4" x2="14" y2="14" stroke="#000" stroke-width="1.4"/><line x1="12" y1="4" x2="16" y2="4" stroke="#000" stroke-width="1"/><line x1="12" y1="14" x2="16" y2="14" stroke="#000" stroke-width="1"/></svg>
+        </div>
+      </div>
       <div class="tdiv"></div>
       <div id="szpick">
         <div class="szo" data-s="1"><div class="szd" style="width:2px;height:2px"></div></div>
@@ -257,7 +262,8 @@ const CSR = {
   spray:  '<svg width="22" height="22" viewBox="0 0 22 22"><rect x="6" y="9" width="11" height="9" rx="2" fill="#888" stroke="#000" stroke-width=".7"/><rect x="9" y="5" width="4.5" height="5" fill="#555" stroke="#000" stroke-width=".5"/><rect x="12.5" y="7" width="5" height="1.5" fill="#333"/><circle cx="3" cy="4.5" r="1.3" fill="#333" opacity=".7"/><circle cx="5.5" cy="2.5" r="1" fill="#333" opacity=".6"/><circle cx="2" cy="7.5" r="1" fill="#333" opacity=".5"/><circle cx="7" cy="2" r="1" fill="#333" opacity=".5"/></svg>',
   callig: '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M2 19L13 2l4 3L6 21z" fill="#222" stroke="#000" stroke-width=".6"/><path d="M13 2l4 3" stroke="#888" stroke-width="1.2"/></svg>',
   bucket: '<svg width="22" height="22" viewBox="0 0 22 22"><path d="M5 2L8 2L16 10L16 11.5L2 11.5Z" fill="#888" stroke="#000" stroke-width=".7"/><path d="M2 11.5L17 11.5L15 20L4 20Z" fill="#bbb" stroke="#000" stroke-width=".7"/><circle cx="20" cy="17" r="2.5" fill="#f44" stroke="#000" stroke-width=".5"/></svg>',
-  select: '<svg width="18" height="22" viewBox="0 0 18 22"><path d="M2 1L2 13L6 9L8.5 15L11 14L8.5 8L14 8Z" fill="black" stroke="white" stroke-width="1" stroke-linejoin="round" paint-order="stroke"/></svg>'
+  select: '<svg width="18" height="22" viewBox="0 0 18 22"><path d="M2 1L2 13L6 9L8.5 15L11 14L8.5 8L14 8Z" fill="black" stroke="white" stroke-width="1" stroke-linejoin="round" paint-order="stroke"/></svg>',
+  text:   '<svg width="22" height="24" viewBox="0 0 22 24"><line x1="11" y1="2" x2="11" y2="22" stroke="white" stroke-width="3.5"/><line x1="5" y1="2" x2="17" y2="2" stroke="white" stroke-width="3"/><line x1="5" y1="22" x2="17" y2="22" stroke="white" stroke-width="3"/><line x1="11" y1="2" x2="11" y2="22" stroke="black" stroke-width="1.5"/><line x1="5" y1="2" x2="17" y2="2" stroke="black" stroke-width="1.5"/><line x1="5" y1="22" x2="17" y2="22" stroke="black" stroke-width="1.5"/></svg>'
 };
 
 // ── Cursor controller ─────────────────────────────────────────────────
@@ -431,6 +437,7 @@ function letterCanvasPaths(ch, ox, oy, h){
 let selRect=null;   // {x,y,w,h} in canvas pixels
 let selData=null;   // saved ImageData
 let dashOff=0;
+let textCursor=null; // {x,y,h} in canvas pixels — the blinking insertion caret
 
 function drawMarchingAnts(){
   if(!selRect) return;
@@ -537,45 +544,100 @@ async function drawWordTwoLines(letterH, spc=0.18){
 }
 
 // ── Bubble letter drawing ─────────────────────────────────────────────
-async function drawBubbleLetters(scheme, letterH){
-  const spc=0.18;
-  const tw=wordTotalWidth(letterH,spc);
-  let cx=Math.max(15,(CW-tw)/2);
-  const baseY=(CH+letterH*0.5)/2;
-  const fontSize=Math.round(letterH*1.05);
-  const fnt=`bold ${fontSize}px "Arial Black","Impact",Arial,sans-serif`;
+// Font options for the text tool — variety of styles
+const TEXT_FONTS=[
+  {fnt:h=>`bold ${Math.round(h*1.1)}px "Arial Black",Impact,Arial,sans-serif`, style:'bubble'},
+  {fnt:h=>`bold ${Math.round(h)}px Arial,Helvetica,sans-serif`,                style:'solid'},
+  {fnt:h=>`bold italic ${Math.round(h)}px Georgia,"Times New Roman",serif`,    style:'solid'},
+  {fnt:h=>`${Math.round(h*0.95)}px "Courier New",Courier,monospace`,           style:'solid'},
+  {fnt:h=>`bold ${Math.round(h*1.05)}px Impact,Haettenschweiler,sans-serif`,   style:'outline'},
+  {fnt:h=>`bold italic ${Math.round(h*0.9)}px "Comic Sans MS",cursive`,        style:'solid'},
+  {fnt:h=>`bold ${Math.round(h*1.1)}px "Arial Black",Impact,Arial,sans-serif`, style:'shadow'},
+];
 
-  for(const ch of WORD){
-    const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
-    const charW=d.w*letterH;
+async function drawWithTextTool(scheme, letterH){
+  // 1. Click text tool
+  const btn=document.getElementById('btn-text');
+  if(btn){ await moveTo(...Object.values(elCenter(btn)),850); await sleep(rand(60,120)); }
+  cur.setTool('text');
+  await sleep(rand(80,180));
 
-    // Move cursor across this character area (simulate drawing)
-    const appStart=cvToApp(cx-4, baseY-letterH*0.9);
-    const appEnd=cvToApp(cx+charW+4, baseY-letterH*0.9);
-    await moveTo(appStart.x, appStart.y, 700);
+  // 2. Pick a font style
+  const fontDef=pick(TEXT_FONTS);
+  const fnt=fontDef.fnt(letterH);
+  const textColor = cur.color;
 
-    // Draw the bubble letter directly
-    ctx.save();
-    ctx.font=fnt;
-    ctx.textBaseline='alphabetic';
-    ctx.lineJoin='round';
-    ctx.lineWidth=letterH/2.8;
-    ctx.strokeStyle=scheme.out;
-    ctx.strokeText(ch,cx,baseY);
-    ctx.fillStyle=scheme.fill;
-    ctx.fillText(ch,cx,baseY);
-    // White highlight
-    ctx.globalAlpha=0.25;
-    ctx.fillStyle='#ffffff';
-    ctx.fillText(ch,cx,baseY);
+  // 3. Measure total width to center the text
+  ctx.save(); ctx.font=fnt; ctx.textBaseline='alphabetic';
+  const KERN=Math.round(letterH*0.02); // tiny inter-char spacing
+  let totalW=0;
+  for(const ch of WORD) totalW+=ctx.measureText(ch).width+KERN;
+  totalW-=KERN;
+  ctx.restore();
+
+  const textX=Math.max(12, (CW-totalW)/2);
+  const baseY=CH*0.60;
+  const caretTop=baseY-letterH*0.92;
+  const caretH=letterH*1.1;
+
+  // 4. Move cursor to text start and click to place insertion point
+  await moveToC(textX-8, baseY-letterH*0.5, 850);
+  await sleep(rand(80,180));
+
+  // Place blinking caret
+  textCursor={x:textX, y:caretTop, h:caretH};
+
+  // Blink for a beat before starting
+  await sleep(rand(300,700));
+
+  // 5. Type each character
+  let insertX=textX;
+  for(let ci=0;ci<WORD.length;ci++){
+    const ch=WORD[ci];
+
+    // Human typing rhythm: mostly fast, occasional pauses
+    const r=Math.random();
+    const delay = r<0.08 ? rand(350,700)   // long hesitation
+                : r<0.25 ? rand(140,260)   // medium pause
+                :           rand(40,115);  // normal keystroke
+    await sleep(delay);
+
+    // Render character
+    ctx.save(); ctx.font=fnt; ctx.textBaseline='alphabetic';
+    if(fontDef.style==='bubble'){
+      ctx.lineJoin='round'; ctx.lineWidth=letterH/3;
+      ctx.strokeStyle=scheme.out; ctx.strokeText(ch,insertX,baseY);
+      ctx.fillStyle=scheme.fill; ctx.fillText(ch,insertX,baseY);
+      ctx.globalAlpha=0.22; ctx.fillStyle='#fff'; ctx.fillText(ch,insertX,baseY);
+    } else if(fontDef.style==='outline'){
+      ctx.lineJoin='round'; ctx.lineWidth=Math.max(1.5,letterH/9);
+      ctx.strokeStyle=textColor; ctx.strokeText(ch,insertX,baseY);
+    } else if(fontDef.style==='shadow'){
+      // Shadow offset
+      ctx.fillStyle='rgba(0,0,0,0.25)';
+      ctx.fillText(ch,insertX+3,baseY+3);
+      ctx.fillStyle=scheme.fill; ctx.fillText(ch,insertX,baseY);
+    } else {
+      ctx.fillStyle=textColor; ctx.fillText(ch,insertX,baseY);
+    }
     ctx.restore();
 
-    // Cursor sweeps across as if painting
-    cur.enqueue([{x:appEnd.x,y:appEnd.y+(Math.random()-.5)*8}], 220, false);
-    await waitIdle();
-    await sleep(rand(60,130));
-    cx+=charW+spc*letterH;
+    const cw=ctx.measureText(ch).width;
+    insertX+=cw+KERN;
+
+    // Advance caret
+    textCursor.x=insertX;
+
+    // Nudge the mouse cursor slightly right — watching the text appear
+    const approxApp=cvToApp(insertX+2, baseY-letterH*0.35);
+    cur.x=approxApp.x+(Math.random()-.5)*3;
+    cur.y=approxApp.y+(Math.random()-.5)*3;
   }
+
+  // Blink at end, then move cursor away and hide caret
+  await sleep(rand(400,1100));
+  textCursor=null;
+  selCtx.clearRect(0,0,CW,CH);
 }
 
 // ── Bucket fill action ────────────────────────────────────────────────
@@ -687,14 +749,11 @@ async function runCycle(){
   const twoLines  = letterH>52 && Math.random()<0.4;
 
   if(useBubble){
-    // --- BUBBLE LETTERS ---
-    stAct.textContent='Bubble letters';
-    // Move to toolbar area (visual cue, no specific tool needed)
-    const btn=document.getElementById('btn-brush');
-    if(btn){ await moveTo(...Object.values(elCenter(btn)),500); await sleep(100); }
-    cur.setTool('brush');
-    await sleep(200);
-    await drawBubbleLetters(scheme, letterH);
+    // --- TEXT TOOL ---
+    stAct.textContent='Text tool';
+    const textColor=pick(PAL.filter(c=>c!=='#ffffff'&&c!=='#c0c0c0'));
+    cur.setColor(textColor);
+    await drawWithTextTool(scheme, letterH);
 
   } else {
     // --- STROKE-BASED ---
@@ -786,7 +845,7 @@ async function runCycle(){
   }
   ctx.clearRect(0,0,CW,CH);
   ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,CW,CH);
-  selRect=null; selCtx.clearRect(0,0,CW,CH);
+  selRect=null; textCursor=null; selCtx.clearRect(0,0,CW,CH);
   await sleep(320);
 }
 
@@ -819,10 +878,26 @@ function animLoop(ts){
   // Update cursor element
   curEl.style.transform=`translate(${cur.x}px,${cur.y}px)`;
 
-  // Marching ants
+  // Marching ants (selection)
   if(selRect){
     dashOff=(dashOff+0.15)%10;
     drawMarchingAnts();
+  }
+
+  // Blinking text insertion caret
+  if(textCursor && !selRect){
+    const blink=Math.floor(Date.now()/500)%2===0;
+    selCtx.clearRect(textCursor.x-5,textCursor.y-2,12,textCursor.h+4);
+    if(blink){
+      selCtx.save();
+      selCtx.fillStyle='#000';
+      // Vertical bar
+      selCtx.fillRect(textCursor.x,textCursor.y,2,textCursor.h);
+      // Serifs
+      selCtx.fillRect(textCursor.x-4,textCursor.y,10,2);
+      selCtx.fillRect(textCursor.x-4,textCursor.y+textCursor.h-2,10,2);
+      selCtx.restore();
+    }
   }
 
   requestAnimationFrame(animLoop);
