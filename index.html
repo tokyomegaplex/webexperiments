@@ -459,15 +459,15 @@ function waitIdle(){
   });
 }
 // Move cursor to app position — travels on a natural arced bezier path
-async function moveTo(x,y,spd=900){
+async function moveTo(x,y,spd=2500){
   const path=arcPath(cur.x,cur.y,x,y);
   cur.enqueue(path,spd,false);
   await waitIdle();
-  // Brief micro-pause after arriving (human settling)
-  if(Math.random()<0.45) await sleep(rand(18,60));
+  // Very brief settle (skip most of the time)
+  if(Math.random()<0.3) await sleep(rand(5,18));
 }
 // Move cursor to canvas pixel
-async function moveToC(cx,cy,spd=900){
+async function moveToC(cx,cy,spd=2500){
   const p=cvToApp(cx,cy); await moveTo(p.x,p.y,spd);
 }
 // Draw along canvas-pixel path — lifts pen, moves to start, then draws
@@ -477,28 +477,28 @@ async function drawPath(pts, spd=260){
   // Move to stroke start (pen up) — arc travel
   const startApp={x:pts[0].x+ox, y:pts[0].y+oy};
   const transit=arcPath(cur.x,cur.y,startApp.x,startApp.y);
-  cur.enqueue(transit, 950, false);
+  cur.enqueue(transit, 1800, false);
   await waitIdle();
   // Tiny hesitation before pen touches paper
-  await sleep(rand(12,55));
+  await sleep(rand(4,18));
   // Draw the stroke (pen down)
   if(pts.length>1)
     cur.enqueue(pts.slice(1).map(p=>({x:p.x+ox,y:p.y+oy})), spd, true);
   await waitIdle();
-  // Micro-stutter after stroke: 15% chance of brief stop
-  if(Math.random()<0.15) await sleep(rand(30,90));
+  // Micro-stutter after stroke: rare brief stop
+  if(Math.random()<0.10) await sleep(rand(10,30));
 }
 // Animate cursor to toolbar button, update state
 async function switchTool(t){
   const btn=document.getElementById('btn-'+t);
-  if(btn){ await moveTo(...Object.values(elCenter(btn)),800); await sleep(rand(60,130)); }
-  cur.setTool(t); await sleep(rand(50,100));
+  if(btn){ await moveTo(...Object.values(elCenter(btn)),2800); await sleep(rand(12,25)); }
+  cur.setTool(t); await sleep(rand(8,15));
 }
 // Animate cursor to palette swatch, update state
 async function pickColor(hex){
   const sw=document.querySelector('.sw[data-c="'+hex+'"]');
-  if(sw){ await moveTo(...Object.values(elCenter(sw)),800); await sleep(rand(40,90)); }
-  cur.setColor(hex); await sleep(rand(30,70));
+  if(sw){ await moveTo(...Object.values(elCenter(sw)),2800); await sleep(rand(8,18)); }
+  cur.setColor(hex); await sleep(rand(5,12));
 }
 
 
@@ -558,9 +558,9 @@ const TEXT_FONTS=[
 async function drawWithTextTool(scheme, letterH){
   // 1. Click text tool
   const btn=document.getElementById('btn-text');
-  if(btn){ await moveTo(...Object.values(elCenter(btn)),850); await sleep(rand(60,120)); }
+  if(btn){ await moveTo(...Object.values(elCenter(btn)),2800); await sleep(rand(10,20)); }
   cur.setTool('text');
-  await sleep(rand(80,180));
+  await sleep(rand(10,20));
 
   // 2. Pick a font style
   const fontDef=pick(TEXT_FONTS);
@@ -581,14 +581,14 @@ async function drawWithTextTool(scheme, letterH){
   const caretH=letterH*1.1;
 
   // 4. Move cursor to text start and click to place insertion point
-  await moveToC(textX-8, baseY-letterH*0.5, 850);
-  await sleep(rand(80,180));
+  await moveToC(textX-8, baseY-letterH*0.5, 2500);
+  await sleep(rand(20,50));
 
   // Place blinking caret
   textCursor={x:textX, y:caretTop, h:caretH};
 
-  // Blink for a beat before starting
-  await sleep(rand(300,700));
+  // Short beat before typing starts
+  await sleep(rand(80,200));
 
   // 5. Type each character
   let insertX=textX;
@@ -597,9 +597,9 @@ async function drawWithTextTool(scheme, letterH){
 
     // Human typing rhythm: mostly fast, occasional pauses
     const r=Math.random();
-    const delay = r<0.08 ? rand(350,700)   // long hesitation
-                : r<0.25 ? rand(140,260)   // medium pause
-                :           rand(40,115);  // normal keystroke
+    const delay = r<0.08 ? rand(35,70)    // long hesitation
+                : r<0.25 ? rand(14,26)    // medium pause
+                :           rand(4,11);   // normal keystroke
     await sleep(delay);
 
     // Render character
@@ -634,8 +634,8 @@ async function drawWithTextTool(scheme, letterH){
     cur.y=approxApp.y+(Math.random()-.5)*3;
   }
 
-  // Blink at end, then move cursor away and hide caret
-  await sleep(rand(400,1100));
+  // Brief blink at end then dismiss
+  await sleep(rand(80,220));
   textCursor=null;
   selCtx.clearRect(0,0,CW,CH);
 }
@@ -643,94 +643,72 @@ async function drawWithTextTool(scheme, letterH){
 // ── Bucket fill action ────────────────────────────────────────────────
 async function doBucketFill(fillColor){
   await switchTool('bucket');
-  await sleep(100);
   cur.setColor(fillColor);
-  // Pick a point inside the text area
   const fx=CW/2+rand(-80,80), fy=CH/2+rand(-30,30);
-  await moveToC(fx,fy,550);
-  await sleep(180);
-  // Click! (apply fill)
+  await moveToC(fx,fy,2500);
+  await sleep(30);
   floodFill(fx,fy,fillColor);
-  await sleep(250);
+  await sleep(60);
 }
 
 // ── Selection + transform ─────────────────────────────────────────────
 async function doSelectTransform(){
   await switchTool('select');
-  await sleep(150);
+  await sleep(30);
 
-  // Define a selection around center portion of canvas
   const sx=CW*0.20, sy=CH*0.20, sw=CW*0.60, sh=CH*0.60;
+  const p0=cvToApp(sx,sy);
+  await moveTo(p0.x,p0.y,2500);
+  await sleep(20);
 
-  // Draw selection rectangle (cursor drags corner to corner)
-  const p0=cvToApp(sx,sy), p1=cvToApp(sx+sw,sy+sh);
-  await moveTo(p0.x,p0.y,600);
-  await sleep(80);
-
-  // Drag to create selection (simulate mouse drag)
   selRect={x:sx,y:sy,w:0,h:0};
   const steps=40;
   for(let i=1;i<=steps;i++){
     const t=i/steps;
     const nx=cvToApp(sx+sw*t,sy+sh*t);
-    cur.enqueue([{x:nx.x,y:nx.y}],600,false);
+    cur.enqueue([{x:nx.x,y:nx.y}],1800,false);
     selRect.w=sw*t; selRect.h=sh*t;
   }
   await waitIdle();
-  await sleep(400);
-
-  // Save selected region
-  selData=ctx.getImageData(sx,sy,sw,sh);
-
-  // Animate scale-up: drag bottom-right handle outward
-  const handle=cvToApp(sx+sw,sy+sh);
-  await moveTo(handle.x,handle.y,500);
   await sleep(100);
 
-  // Scale the selection up
+  selData=ctx.getImageData(sx,sy,sw,sh);
+
+  const handle=cvToApp(sx+sw,sy+sh);
+  await moveTo(handle.x,handle.y,2500);
+  await sleep(20);
+
   const newW=sw*1.35, newH=sh*1.35;
   const newX=sx-(newW-sw)/2, newY=sy-(newH-sh)/2;
-
-  // Animate handle drag
   const target=cvToApp(newX+newW,newY+newH);
-  cur.enqueue([{x:target.x,y:target.y}],220,false);
+  cur.enqueue([{x:target.x,y:target.y}],900,false);
   await waitIdle();
 
-  // Apply transform: clear old area, draw scaled
   ctx.clearRect(sx-2,sy-2,sw+4,sh+4);
   ctx.fillStyle='#ffffff'; ctx.fillRect(sx-2,sy-2,sw+4,sh+4);
-
-  // Draw scaled version
   const tempCvs=document.createElement('canvas');
   tempCvs.width=sw; tempCvs.height=sh;
   tempCvs.getContext('2d').putImageData(selData,0,0);
   ctx.drawImage(tempCvs, newX, newY, newW, newH);
-
   selRect={x:newX,y:newY,w:newW,h:newH};
-  await sleep(600);
+  await sleep(120);
 
-  // Sometimes also rotate slightly
   if(Math.random()<0.5){
     const angle=(Math.random()-.5)*0.25;
     const cx2=newX+newW/2, cy2=newY+newH/2;
-    const rotCvs=document.createElement('canvas');
-    rotCvs.width=CW; rotCvs.height=CH;
-    const rCtx=rotCvs.getContext('2d');
-    rCtx.drawImage(canvas,0,0);
     ctx.clearRect(newX-5,newY-5,newW+10,newH+10);
     ctx.fillStyle='#ffffff'; ctx.fillRect(newX-5,newY-5,newW+10,newH+10);
     ctx.save();
     ctx.translate(cx2,cy2); ctx.rotate(angle); ctx.translate(-cx2,-cy2);
     ctx.drawImage(tempCvs, newX, newY, newW, newH);
     ctx.restore();
-    await sleep(400);
+    await sleep(80);
   }
 
-  // Drop selection
-  await moveTo(cvToApp(CW*0.1,CH*0.1).x, cvToApp(CW*0.1,CH*0.1).y, 400);
+  await moveTo(cvToApp(CW*0.1,CH*0.1).x, cvToApp(CW*0.1,CH*0.1).y, 2500);
   selRect=null; selData=null;
   selCtx.clearRect(0,0,CW,CH);
-  await sleep(200);
+  await sleep(50);
 }
 
 
@@ -769,7 +747,7 @@ async function runCycle(){
     await switchTool(tool);
     await pickColor(color);
     cur.setSize(size);
-    await sleep(150);
+    await sleep(20);
 
     stAct.textContent='Writing ('+tool+')...';
     if(twoLines) await drawWordTwoLines(letterH);
@@ -785,7 +763,7 @@ async function runCycle(){
     await switchTool(tool2);
     await pickColor(scheme2.fill);
     cur.setSize(size2);
-    await sleep(80);
+    await sleep(15);
     const h2=randInt(30,55);
     await drawWordStrokes(h2, 0.22);
   }
@@ -795,7 +773,7 @@ async function runCycle(){
     const fillC=pick(PAL.filter(c=>c!=='#000000'&&c!=='#808080'&&c!=='#ffffff'));
     stAct.textContent='Filling...';
     await doBucketFill(fillC);
-    await sleep(200);
+    await sleep(40);
     // Sometimes a second fill with different color
     if(Math.random()<0.4){
       const fillC2=pick(PAL.filter(c=>c!==fillC&&c!=='#000000'&&c!=='#ffffff'));
@@ -826,27 +804,27 @@ async function runCycle(){
   // --- Admire ---
   stAct.textContent='Admiring...';
   await moveTo(cwrap.getBoundingClientRect().left-app.getBoundingClientRect().left+CW/2,
-               cwrap.getBoundingClientRect().top -app.getBoundingClientRect().top +CH/2, 300);
-  await sleep(rand(700,2200));
+               cwrap.getBoundingClientRect().top -app.getBoundingClientRect().top +CH/2, 1800);
+  await sleep(rand(400,1000));
 
   // --- Clear ---
   stAct.textContent='Clearing canvas...';
   const menuE=document.getElementById('menu-edit');
-  await moveTo(...Object.values(elCenter(menuE)),400);
+  await moveTo(...Object.values(elCenter(menuE)),2800);
   menuE.classList.add('open');
-  await sleep(220);
+  await sleep(80);
   menuE.classList.remove('open');
 
-  // Fade clear effect
-  for(let a=0;a<8;a++){
-    ctx.fillStyle='rgba(255,255,255,0.28)';
+  // Quick fade clear
+  for(let a=0;a<5;a++){
+    ctx.fillStyle='rgba(255,255,255,0.35)';
     ctx.fillRect(0,0,CW,CH);
-    await sleep(40);
+    await sleep(18);
   }
   ctx.clearRect(0,0,CW,CH);
   ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,CW,CH);
   selRect=null; textCursor=null; selCtx.clearRect(0,0,CW,CH);
-  await sleep(320);
+  await sleep(80);
 }
 
 async function directorLoop(){
