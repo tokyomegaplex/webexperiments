@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Text Editor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    overflow: hidden;
+    font-family: monospace;
+  }
+  canvas { display: block; }
+  #ui {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    color: #888;
+    font-size: 12px;
+    pointer-events: none;
+    line-height: 1.8;
+  }
+  #ui span { color: #aef; }
+  #cursor {
+    position: fixed;
+    width: 18px;
+    height: 18px;
+    pointer-events: none;
+    z-index: 100;
+    transform: translate(-2px, -2px);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<svg id="cursor" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
+  <polygon points="2,2 2,14 5,11 7,16 9,15 7,10 11,10" fill="white" stroke="#333" stroke-width="0.8"/>
+</svg>
+<div id="ui">
+  3D Text Editor<br>
+  Action: <span id="action">Initializing...</span><br>
+  Letter: <span id="letter">—</span>
+</div>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { FontLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FontLoader.js';
+import { TextGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/TextGeometry.js';
+
+// ── Scene setup ─────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a1a);
+scene.fog = new THREE.Fog(0x0a0a1a, 30, 80);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 2, 22);
+camera.lookAt(0, 0, 0);
+
+// Lights
+const ambient = new THREE.AmbientLight(0x334466, 1.2);
+scene.add(ambient);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.5);
+key.position.set(5, 10, 8);
+key.castShadow = true;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x4466aa, 1.0);
+fill.position.set(-8, 4, 6);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xaa44ff, 0.8);
+rim.position.set(0, -5, -10);
+scene.add(rim);
+
+// Grid floor
+const grid = new THREE.GridHelper(60, 40, 0x223, 0x112);
+grid.position.y = -4;
+scene.add(grid);
+
+// ── Fake cursor ──────────────────────────────────────────────────────────────
+const cursorEl = document.getElementById('cursor');
+let cursorX = innerWidth / 2;
+let cursorY = innerHeight / 2;
+cursorEl.style.left = cursorX + 'px';
+cursorEl.style.top  = cursorY + 'px';
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function easeInOut(t) { return t < 0.5 ? 2*t*t : -1+(4-2*t)*t; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerpV3(a, b, t) {
+  return new THREE.Vector3(lerp(a.x,b.x,t), lerp(a.y,b.y,t), lerp(a.z,b.z,t));
+}
+function lerpQ(a, b, t) { return a.clone().slerp(b, t); }
+
+// Wiggle path: return point along a bezier‑like curve
+function bezier3(p0, p1, p2, p3, t) {
+  const mt = 1 - t;
+  return new THREE.Vector3(
+    mt*mt*mt*p0.x + 3*mt*mt*t*p1.x + 3*mt*t*t*p2.x + t*t*t*p3.x,
+    mt*mt*mt*p0.y + 3*mt*mt*t*p1.y + 3*mt*t*t*p2.y + t*t*t*p3.y,
+    mt*mt*mt*p0.z + 3*mt*mt*t*p1.z + 3*mt*t*t*p2.z + t*t*t*p3.z,
+  );
+}
+
+// Project a 3D world point to 2D screen pixels
+function toScreen(v3) {
+  const v = v3.clone().project(camera);
+  return {
+    x: ( v.x * 0.5 + 0.5) * innerWidth,
+    y: (-v.y * 0.5 + 0.5) * innerHeight,
+  };
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+const actionEl = document.getElementById('action');
+const letterEl = document.getElementById('letter');
+
+let letters = [];        // { mesh, home: {pos,rot,scale}, target: {…}, start: {…}, phase }
+let font = null;
+let sequenceRunning = false;
+let clock = new THREE.Clock();
+
+// ── Font & geometry ──────────────────────────────────────────────────────────
+const loader = new FontLoader();
+loader.load(
+  'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_bold.typeface.json',
+  (f) => {
+    font = f;
+    buildText();
+    setTimeout(runSequence, 800);
+  }
+);
+
+function buildText() {
+  const word = 'amalgamation';
+  const matBase = new THREE.MeshStandardMaterial({
+    color: 0x88aaff,
+    metalness: 0.7,
+    roughness: 0.2,
+    emissive: 0x112244,
+    emissiveIntensity: 0.4,
+  });
+
+  // Measure total width first
+  let totalWidth = 0;
+  const geoms = [];
+  for (const ch of word) {
+    const g = new TextGeometry(ch, {
+      font, size: 1.6, height: 0.5, curveSegments: 12,
+      bevelEnabled: true, bevelThickness: 0.06, bevelSize: 0.04, bevelSegments: 4,
+    });
+    g.computeBoundingBox();
+    const w = g.boundingBox.max.x - g.boundingBox.min.x;
+    geoms.push({ g, w });
+    totalWidth += w + 0.18;
+  }
+  totalWidth -= 0.18;
+
+  let x = -totalWidth / 2;
+  word.split('').forEach((ch, i) => {
+    const { g, w } = geoms[i];
+    const mat = matBase.clone();
+    // Slight hue variation per letter
+    const hsl = { h: 0, s: 0, l: 0 };
+    mat.color.getHSL(hsl);
+    mat.color.setHSL(hsl.h + i * 0.015, hsl.s, hsl.l);
+
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.position.set(x + w/2, 0, 0);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+
+    const pos = mesh.position.clone();
+    letters.push({
+      mesh,
+      ch,
+      home: { pos: pos.clone(), rot: new THREE.Euler(), scale: new THREE.Vector3(1,1,1) },
+      current: { pos: pos.clone(), rot: new THREE.Euler(), scale: new THREE.Vector3(1,1,1) },
+      animating: false,
+    });
+
+    x += w + 0.18;
+  });
+}
+
+// ── Sequence runner ──────────────────────────────────────────────────────────
+// Each step: pick a letter, animate cursor to it, then apply transform
+
+function randomChoice(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function randRange(a, b) { return a + Math.random() * (b - a); }
+
+async function runSequence() {
+  sequenceRunning = true;
+  // Repeat forever
+  while (true) {
+    // Pick random subset of letters (3–6)
+    const count = Math.floor(randRange(3, 7));
+    const indices = [...Array(letters.length).keys()].sort(() => Math.random() - 0.5).slice(0, count);
+
+    for (const idx of indices) {
+      const letter = letters[idx];
+      actionEl.textContent = 'Moving cursor…';
+      letterEl.textContent = letter.ch.toUpperCase();
+
+      // 1) Move cursor to letter in screen space
+      const screenPos = toScreen(letter.current.pos.clone().add(new THREE.Vector3(0, 0.8, 0)));
+      await moveCursorTo(screenPos.x, screenPos.y, randRange(0.55, 1.1));
+
+      // Small pause — "thinking"
+      await wait(randRange(80, 200));
+
+      // 2) Choose a random transform
+      const op = randomChoice(['translate', 'rotate', 'scale', 'translate+rotate', 'translate+scale']);
+      actionEl.textContent = op;
+
+      // Build target state
+      const targetPos   = letter.current.pos.clone();
+      const targetRot   = new THREE.Euler(letter.current.rot.x, letter.current.rot.y, letter.current.rot.z);
+      const targetScale = letter.current.scale.clone();
+
+      if (op.includes('translate')) {
+        targetPos.x += randRange(-3.5, 3.5);
+        targetPos.y += randRange(-2.5, 3.0);
+        targetPos.z += randRange(-4.0, 4.0);
+      }
+      if (op.includes('rotate')) {
+        targetRot.x += randRange(-Math.PI, Math.PI);
+        targetRot.y += randRange(-Math.PI, Math.PI);
+        targetRot.z += randRange(-0.8, 0.8);
+      }
+      if (op.includes('scale')) {
+        const s = randRange(0.5, 2.2);
+        targetScale.set(s, s, s);
+      }
+
+      // 3) Animate the letter + cursor follows it
+      const duration = randRange(0.7, 1.6);
+      await animateLetter(letter, targetPos, targetRot, targetScale, duration);
+
+      // Update current state
+      letter.current.pos.copy(targetPos);
+      letter.current.rot.copy(targetRot);
+      letter.current.scale.copy(targetScale);
+
+      await wait(randRange(120, 350));
+    }
+
+    // After acting on several letters, return them home one by one
+    actionEl.textContent = 'Resetting…';
+    letterEl.textContent = '—';
+    await wait(400);
+
+    for (const idx of indices) {
+      const letter = letters[idx];
+      const screenPos = toScreen(letter.current.pos.clone().add(new THREE.Vector3(0, 0.8, 0)));
+      await moveCursorTo(screenPos.x, screenPos.y, randRange(0.4, 0.8));
+      await animateLetter(
+        letter,
+        letter.home.pos.clone(),
+        new THREE.Euler(),
+        new THREE.Vector3(1, 1, 1),
+        randRange(0.6, 1.1)
+      );
+      letter.current.pos.copy(letter.home.pos);
+      letter.current.rot.set(0,0,0);
+      letter.current.scale.set(1,1,1);
+      await wait(randRange(60, 180));
+    }
+
+    await wait(randRange(500, 1200));
+  }
+}
+
+// ── Cursor movement ──────────────────────────────────────────────────────────
+// Realistic bezier path with slight overshoot and jitter
+
+function moveCursorTo(tx, ty, duration) {
+  return new Promise(resolve => {
+    const sx = cursorX, sy = cursorY;
+    const dx = tx - sx, dy = ty - sy;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+
+    // Control points for natural arc
+    const cp1 = {
+      x: sx + dx * 0.25 + (Math.random() - 0.5) * dist * 0.3,
+      y: sy + dy * 0.25 + (Math.random() - 0.5) * dist * 0.3,
+    };
+    const cp2 = {
+      x: sx + dx * 0.75 + (Math.random() - 0.5) * dist * 0.2,
+      y: sy + dy * 0.75 + (Math.random() - 0.5) * dist * 0.2,
+    };
+
+    const start = performance.now();
+    const ms = duration * 1000;
+
+    function tick() {
+      const t = Math.min((performance.now() - start) / ms, 1);
+      const e = easeInOut(t);
+      const mt = 1 - e;
+      cursorX = mt*mt*mt*sx + 3*mt*mt*e*cp1.x + 3*mt*e*e*cp2.x + e*e*e*tx;
+      cursorY = mt*mt*mt*sy + 3*mt*mt*e*cp1.y + 3*mt*e*e*cp2.y + e*e*e*ty;
+      // Micro-jitter for hand tremor (reduces near end)
+      const jitter = (1 - t) * 1.5;
+      cursorX += (Math.random() - 0.5) * jitter;
+      cursorY += (Math.random() - 0.5) * jitter;
+      cursorEl.style.left = cursorX + 'px';
+      cursorEl.style.top  = cursorY + 'px';
+      if (t < 1) requestAnimationFrame(tick);
+      else resolve();
+    }
+    requestAnimationFrame(tick);
+  });
+}
+
+// ── Letter animation ─────────────────────────────────────────────────────────
+function animateLetter(letter, toPos, toRot, toScale, duration) {
+  return new Promise(resolve => {
+    const fromPos   = letter.current.pos.clone();
+    const fromRot   = new THREE.Quaternion().setFromEuler(letter.current.rot);
+    const toRotQ    = new THREE.Quaternion().setFromEuler(toRot);
+    const fromScale = letter.current.scale.clone();
+
+    const start = performance.now();
+    const ms = duration * 1000;
+
+    function tick() {
+      const t = Math.min((performance.now() - start) / ms, 1);
+      const e = easeInOut(t);
+
+      // Interpolate
+      letter.mesh.position.lerpVectors(fromPos, toPos, e);
+      letter.mesh.quaternion.slerpQuaternions(fromRot, toRotQ, e);
+      letter.mesh.scale.lerpVectors(fromScale, toScale, e);
+
+      // Cursor follows midpoint of letter in screen space during transform
+      if (t < 1) {
+        const sp = toScreen(letter.mesh.position);
+        cursorX += (sp.x - cursorX) * 0.12;
+        cursorY += (sp.y - cursorY) * 0.12;
+        cursorEl.style.left = cursorX + 'px';
+        cursorEl.style.top  = cursorY + 'px';
+        requestAnimationFrame(tick);
+      } else {
+        resolve();
+      }
+    }
+    requestAnimationFrame(tick);
+  });
+}
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── Render loop ──────────────────────────────────────────────────────────────
+let t0 = 0;
+function animate(t) {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  t0 += dt;
+
+  // Gentle camera bob
+  camera.position.y = 2 + Math.sin(t0 * 0.18) * 0.3;
+  camera.position.x = Math.sin(t0 * 0.11) * 1.2;
+  camera.lookAt(0, 0.5, 0);
+
+  renderer.render(scene, camera);
+}
+animate(0);
+
+// ── Resize ───────────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
