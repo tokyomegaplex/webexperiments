@@ -9,8 +9,7 @@
   #ui {
     position:fixed; top:14px; left:16px; z-index:10;
     color:#555; font:11px/1.9 'Courier New',monospace;
-    pointer-events:none;
-    text-shadow:0 1px 3px #000;
+    pointer-events:none; text-shadow:0 1px 3px #000;
   }
   #ui b { color:#bbb }
   #cur {
@@ -30,15 +29,13 @@
   3D TEXT EDITOR &nbsp;·&nbsp; Mode: <b id="modeEl">—</b> &nbsp;·&nbsp; Letter: <b id="ltEl">—</b>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.148.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.148.0/examples/js/loaders/FontLoader.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.148.0/examples/js/geometries/TextGeometry.js"></script>
+<!-- Single dependency: Three.js core only -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
 <script>
-
 // ── Constants ─────────────────────────────────────────────────────────────────
-const Y_UP = new THREE.Vector3(0,1,0);
-const COL  = { x:0xee3333, y:0x33dd55, z:0x3399ff, hi:0xffee00, w:0xffffff };
-const GSCALE = 1.9; // world-space gizmo size
+const Y_UP  = new THREE.Vector3(0,1,0);
+const COL   = { x:0xee3333, y:0x33dd55, z:0x3399ff, hi:0xffee00, w:0xffffff };
+const GSCALE = 1.9;
 
 // ── Renderer ─────────────────────────────────────────────────────────────────
 const canvas = document.getElementById('c');
@@ -55,8 +52,7 @@ renderer.toneMappingExposure = 1.15;
 const scene  = new THREE.Scene();
 scene.background = new THREE.Color(0x16161e);
 scene.fog = new THREE.FogExp2(0x16161e, 0.016);
-
-const gScene = new THREE.Scene(); // gizmo – rendered after depth clear
+const gScene = new THREE.Scene();
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 const camera = new THREE.PerspectiveCamera(48, innerWidth/innerHeight, 0.1, 500);
@@ -64,345 +60,289 @@ camera.position.set(0, 3.5, 30);
 camera.lookAt(0, 0.5, 0);
 
 // ── Lights ────────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0x223366, 0.7));
+scene.add(new THREE.AmbientLight(0x223366, 0.8));
 const sun = new THREE.DirectionalLight(0xffffff, 2.5);
-sun.position.set(6,12,8);
-sun.castShadow = true;
+sun.position.set(6,12,8); sun.castShadow = true;
 sun.shadow.mapSize.set(2048,2048);
-Object.assign(sun.shadow.camera, {left:-25,right:25,top:12,bottom:-12,near:1,far:80});
+Object.assign(sun.shadow.camera, {left:-30,right:30,top:14,bottom:-14,near:1,far:80});
 scene.add(sun);
 const fill = new THREE.DirectionalLight(0x4466ff, 1.0); fill.position.set(-10,4,3); scene.add(fill);
 const rim  = new THREE.DirectionalLight(0xff5500, 0.6); rim.position.set(3,-6,-10); scene.add(rim);
 
-// ── Floor / grid ─────────────────────────────────────────────────────────────
+// ── Floor ─────────────────────────────────────────────────────────────────────
 const grid = new THREE.GridHelper(100,60,0x2a2a3a,0x222232);
 grid.position.y = -3.8; scene.add(grid);
-const floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(100,100), new THREE.ShadowMaterial({opacity:.25}));
-floorMesh.rotation.x = -Math.PI/2; floorMesh.position.y = -3.8; floorMesh.receiveShadow = true;
-scene.add(floorMesh);
+const floorM = new THREE.Mesh(new THREE.PlaneGeometry(100,100), new THREE.ShadowMaterial({opacity:.25}));
+floorM.rotation.x = -Math.PI/2; floorM.position.y = -3.8; floorM.receiveShadow = true; scene.add(floorM);
 
-// ── Gizmo material factory ────────────────────────────────────────────────────
-function gMat(color, {opacity=1, side=THREE.FrontSide, transparent=false}={}) {
-  return new THREE.MeshBasicMaterial({ color, transparent: transparent||opacity<1, opacity, side });
+// ── Letter meshes (canvas texture on box) ────────────────────────────────────
+const WORD = 'amalgamation';
+const letters = [];
+
+function makeLetterTexture(ch, hue) {
+  const S = 256;
+  const cv = document.createElement('canvas');
+  cv.width = S; cv.height = S;
+  const ctx = cv.getContext('2d');
+  // Face gradient
+  const g = ctx.createLinearGradient(0,0,S,S);
+  const c1 = `hsl(${hue*360|0},55%,28%)`;
+  const c2 = `hsl(${hue*360|0},45%,18%)`;
+  g.addColorStop(0, c1); g.addColorStop(1, c2);
+  ctx.fillStyle = g; ctx.fillRect(0,0,S,S);
+  // Bevel lines
+  ctx.strokeStyle = `hsla(${hue*360|0},60%,70%,.35)`;
+  ctx.lineWidth = 6;
+  ctx.strokeRect(3,3,S-6,S-6);
+  // Letter
+  ctx.font = '900 160px "Arial Black",Arial,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = `hsl(${hue*360|0},55%,82%)`;
+  ctx.shadowColor = `hsl(${hue*360|0},80%,60%)`;
+  ctx.shadowBlur = 18;
+  ctx.fillText(ch, S/2, S/2+6);
+  return new THREE.CanvasTexture(cv);
+}
+
+function buildLetters() {
+  // Measure widths proportionally using a temp canvas
+  const tmp = document.createElement('canvas').getContext('2d');
+  tmp.font = '900 180px "Arial Black",Arial,sans-serif';
+  const H = 2.0, DEPTH = 0.5, GAP = 0.12;
+  const chars = WORD.split('');
+  const widths = chars.map(ch => {
+    const w = tmp.measureText(ch).width;
+    return Math.max(w / 180, 0.55) * H * 0.78;
+  });
+  const totalW = widths.reduce((a,b)=>a+b,0) + GAP*(chars.length-1);
+
+  let x = -totalW/2;
+  chars.forEach((ch, i) => {
+    const W = widths[i];
+    const hue = 0.60 + i*0.013;
+    const tex  = makeLetterTexture(ch, hue);
+    const col  = new THREE.Color().setHSL(hue,.45,.35);
+    const face = new THREE.MeshStandardMaterial({ map:tex, metalness:.75, roughness:.18 });
+    const side = new THREE.MeshStandardMaterial({ color:col, metalness:.8, roughness:.2 });
+    const geo  = new THREE.BoxGeometry(W, H, DEPTH);
+    // 6 faces: +x,-x,+y,-y,+z,-z
+    const mesh = new THREE.Mesh(geo, [side,side,side,side,face,side]);
+    const hx   = x + W/2;
+    mesh.position.set(hx, 0, 0);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    scene.add(mesh);
+    const home = { pos:new THREE.Vector3(hx,0,0), rot:new THREE.Euler(), scale:new THREE.Vector3(1,1,1) };
+    letters.push({ mesh, ch, hue, home, cur:{ pos:home.pos.clone(), rot:new THREE.Euler(), scale:new THREE.Vector3(1,1,1) } });
+    x += W + GAP;
+  });
+}
+buildLetters();
+
+// ── Gizmo material ────────────────────────────────────────────────────────────
+function gMat(color, {opacity=1,side=THREE.FrontSide}={}) {
+  return new THREE.MeshBasicMaterial({color, transparent:opacity<1, opacity, side});
 }
 
 // ── Translate gizmo ───────────────────────────────────────────────────────────
 function buildTranslate() {
   const root = new THREE.Group();
-  const axes = [
-    {key:'x', dir:new THREE.Vector3(1,0,0), color:COL.x},
-    {key:'y', dir:new THREE.Vector3(0,1,0), color:COL.y},
-    {key:'z', dir:new THREE.Vector3(0,0,1), color:COL.z},
-  ];
-  const hPos = {}, hMesh = {};
+  const axes = [{key:'x',dir:new THREE.Vector3(1,0,0),color:COL.x},{key:'y',dir:new THREE.Vector3(0,1,0),color:COL.y},{key:'z',dir:new THREE.Vector3(0,0,1),color:COL.z}];
+  const hPos={}, hMesh={};
   for (const {key,dir,color} of axes) {
     const mat = gMat(color);
     const shaft = new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,1.1,8), mat);
-    shaft.quaternion.setFromUnitVectors(Y_UP, dir);
-    shaft.position.copy(dir.clone().multiplyScalar(.55));
-    root.add(shaft);
+    shaft.quaternion.setFromUnitVectors(Y_UP,dir); shaft.position.copy(dir.clone().multiplyScalar(.55)); root.add(shaft);
     const cone = new THREE.Mesh(new THREE.ConeGeometry(.075,.28,8), mat);
-    cone.quaternion.setFromUnitVectors(Y_UP, dir);
-    cone.position.copy(dir.clone().multiplyScalar(1.24));
-    root.add(cone);
-    hPos[key]  = dir.clone().multiplyScalar(1.4);
-    hMesh[key] = [shaft, cone];
+    cone.quaternion.setFromUnitVectors(Y_UP,dir); cone.position.copy(dir.clone().multiplyScalar(1.24)); root.add(cone);
+    hPos[key]=dir.clone().multiplyScalar(1.4); hMesh[key]=[shaft,cone];
   }
-  // Plane-handle squares
-  [
-    {pos:new THREE.Vector3(.32,.32,0), n:new THREE.Vector3(0,0,1), c:0xffaa33},
-    {pos:new THREE.Vector3(.32,0,.32), n:new THREE.Vector3(0,1,0), c:0x33aaff},
-    {pos:new THREE.Vector3(0,.32,.32), n:new THREE.Vector3(1,0,0), c:0x99ff33},
-  ].forEach(({pos,n,c}) => {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(.22,.22), gMat(c,{opacity:.45,transparent:true,side:THREE.DoubleSide}));
+  [{pos:new THREE.Vector3(.32,.32,0),n:new THREE.Vector3(0,0,1),c:0xffaa33},
+   {pos:new THREE.Vector3(.32,0,.32),n:new THREE.Vector3(0,1,0),c:0x33aaff},
+   {pos:new THREE.Vector3(0,.32,.32),n:new THREE.Vector3(1,0,0),c:0x99ff33}].forEach(({pos,n,c})=>{
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(.22,.22),gMat(c,{opacity:.45,side:THREE.DoubleSide}));
     m.position.copy(pos); m.lookAt(pos.clone().add(n)); root.add(m);
   });
-  root.add(Object.assign(new THREE.Mesh(new THREE.SphereGeometry(.055,8,8), gMat(COL.w)), {}));
-  root.userData = {hPos, hMesh, type:'translate'};
-  return root;
+  root.add(new THREE.Mesh(new THREE.SphereGeometry(.055,8,8),gMat(COL.w)));
+  root.userData={hPos,hMesh,type:'translate'}; return root;
 }
 
 // ── Rotate gizmo ─────────────────────────────────────────────────────────────
 function buildRotate() {
   const root = new THREE.Group();
-  // Each ring: rotation to align torus to correct plane
-  const rings = [
-    {key:'x', color:COL.x, rx:0,        ry:Math.PI/2, rz:0},  // YZ plane
-    {key:'y', color:COL.y, rx:Math.PI/2, ry:0,         rz:0},  // XZ plane
-    {key:'z', color:COL.z, rx:0,         ry:0,          rz:0},  // XY plane
-  ];
-  const hPos = {}, hMesh = {};
+  const rings=[{key:'x',color:COL.x,rx:0,ry:Math.PI/2,rz:0},{key:'y',color:COL.y,rx:Math.PI/2,ry:0,rz:0},{key:'z',color:COL.z,rx:0,ry:0,rz:0}];
+  const hPos={}, hMesh={};
   for (const {key,color,rx,ry,rz} of rings) {
-    const mat  = gMat(color);
-    const torus = new THREE.Mesh(new THREE.TorusGeometry(1.1,.026,8,56), mat);
+    const mat=gMat(color);
+    const torus=new THREE.Mesh(new THREE.TorusGeometry(1.1,.026,8,56),mat);
     torus.rotation.set(rx,ry,rz); root.add(torus);
-
-    // Small cone at ring's "north pole" to suggest rotation direction
-    const localTop = new THREE.Vector3(0,1.1,0).applyEuler(new THREE.Euler(rx,ry,rz));
-    const tangent  = new THREE.Vector3(1,0,0).applyEuler(new THREE.Euler(rx,ry,rz));
-    const coneM = new THREE.Mesh(new THREE.ConeGeometry(.055,.18,6), gMat(color));
-    coneM.position.copy(localTop);
-    coneM.quaternion.setFromUnitVectors(Y_UP, tangent.normalize());
-    root.add(coneM);
-
-    hPos[key]  = localTop.clone();
-    hMesh[key] = [torus, coneM];
+    const localTop=new THREE.Vector3(0,1.1,0).applyEuler(new THREE.Euler(rx,ry,rz));
+    const tangent=new THREE.Vector3(1,0,0).applyEuler(new THREE.Euler(rx,ry,rz));
+    const coneM=new THREE.Mesh(new THREE.ConeGeometry(.055,.18,6),gMat(color));
+    coneM.position.copy(localTop); coneM.quaternion.setFromUnitVectors(Y_UP,tangent.normalize()); root.add(coneM);
+    hPos[key]=localTop.clone(); hMesh[key]=[torus,coneM];
   }
-  root.add(new THREE.Mesh(new THREE.SphereGeometry(.045,8,8), gMat(COL.w,{opacity:.7,transparent:true})));
-  root.userData = {hPos, hMesh, type:'rotate'};
-  return root;
+  root.add(new THREE.Mesh(new THREE.SphereGeometry(.045,8,8),gMat(COL.w,{opacity:.7})));
+  root.userData={hPos,hMesh,type:'rotate'}; return root;
 }
 
 // ── Scale gizmo ───────────────────────────────────────────────────────────────
 function buildScale() {
-  const root  = new THREE.Group();
-  const axes  = [
-    {key:'x', dir:new THREE.Vector3(1,0,0), color:COL.x},
-    {key:'y', dir:new THREE.Vector3(0,1,0), color:COL.y},
-    {key:'z', dir:new THREE.Vector3(0,0,1), color:COL.z},
-  ];
-  const hPos = {}, hMesh = {};
+  const root=new THREE.Group();
+  const axes=[{key:'x',dir:new THREE.Vector3(1,0,0),color:COL.x},{key:'y',dir:new THREE.Vector3(0,1,0),color:COL.y},{key:'z',dir:new THREE.Vector3(0,0,1),color:COL.z}];
+  const hPos={},hMesh={};
   for (const {key,dir,color} of axes) {
-    const mat   = gMat(color);
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,1.1,8), mat);
-    shaft.quaternion.setFromUnitVectors(Y_UP, dir);
-    shaft.position.copy(dir.clone().multiplyScalar(.55));
-    root.add(shaft);
-    const box = new THREE.Mesh(new THREE.BoxGeometry(.13,.13,.13), mat);
-    box.position.copy(dir.clone().multiplyScalar(1.22));
-    root.add(box);
-    hPos[key]  = dir.clone().multiplyScalar(1.32);
-    hMesh[key] = [shaft, box];
+    const mat=gMat(color);
+    const shaft=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,1.1,8),mat);
+    shaft.quaternion.setFromUnitVectors(Y_UP,dir); shaft.position.copy(dir.clone().multiplyScalar(.55)); root.add(shaft);
+    const box=new THREE.Mesh(new THREE.BoxGeometry(.13,.13,.13),mat);
+    box.position.copy(dir.clone().multiplyScalar(1.22)); root.add(box);
+    hPos[key]=dir.clone().multiplyScalar(1.32); hMesh[key]=[shaft,box];
   }
-  root.add(new THREE.Mesh(new THREE.BoxGeometry(.1,.1,.1), gMat(COL.w)));
-  root.userData = {hPos, hMesh, type:'scale'};
-  return root;
+  root.add(new THREE.Mesh(new THREE.BoxGeometry(.1,.1,.1),gMat(COL.w)));
+  root.userData={hPos,hMesh,type:'scale'}; return root;
 }
 
-// ── Active gizmo state ────────────────────────────────────────────────────────
-let gizmo = null;
-
-function showGizmo(type, worldPos) {
-  if (gizmo) gScene.remove(gizmo);
-  gizmo = type==='translate' ? buildTranslate()
-        : type==='rotate'    ? buildRotate()
-        :                      buildScale();
-  gizmo.position.copy(worldPos);
-  gizmo.scale.setScalar(GSCALE);
-  gScene.add(gizmo);
+// ── Gizmo management ─────────────────────────────────────────────────────────
+let gizmo=null;
+function showGizmo(type,pos) {
+  if(gizmo) gScene.remove(gizmo);
+  gizmo = type==='translate'?buildTranslate():type==='rotate'?buildRotate():buildScale();
+  gizmo.position.copy(pos); gizmo.scale.setScalar(GSCALE); gScene.add(gizmo);
 }
-
-function moveGizmo(worldPos) { if (gizmo) gizmo.position.copy(worldPos); }
-
-function hideGizmo() { if (gizmo) { gScene.remove(gizmo); gizmo=null; } }
-
-function handleScreenPos(axisKey) {
-  if (!gizmo) return null;
-  const lp = gizmo.userData.hPos[axisKey];
-  if (!lp) return null;
-  const wp = gizmo.position.clone().add(lp.clone().multiplyScalar(GSCALE));
-  const v  = wp.clone().project(camera);
-  return { x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight };
+function moveGizmo(pos){ if(gizmo) gizmo.position.copy(pos); }
+function hideGizmo(){ if(gizmo){gScene.remove(gizmo);gizmo=null;} }
+function handleScreen(key){
+  if(!gizmo) return null;
+  const lp=gizmo.userData.hPos[key]; if(!lp) return null;
+  const wp=gizmo.position.clone().add(lp.clone().multiplyScalar(GSCALE));
+  const v=wp.clone().project(camera);
+  return {x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight};
 }
-
-function setHighlight(axisKey) {
-  if (!gizmo) return;
-  const {hMesh} = gizmo.userData;
-  Object.entries(hMesh).forEach(([k,ms]) => {
-    const c = k==='x'?COL.x : k==='y'?COL.y : COL.z;
-    ms.forEach(m => m.material.color.set(axisKey===k ? COL.hi : c));
+function setHL(key){
+  if(!gizmo) return;
+  Object.entries(gizmo.userData.hMesh).forEach(([k,ms])=>{
+    const c=k==='x'?COL.x:k==='y'?COL.y:COL.z;
+    ms.forEach(m=>m.material.color.set(key===k?COL.hi:c));
   });
 }
-
-function clearHighlight() { setHighlight('__none__'); }
-
-// ── Letters ───────────────────────────────────────────────────────────────────
-const WORD = 'amalgamation';
-const letters = [];
-
-function buildLetters(font) {
-  const FS = 1.7, GAP = 0.18;
-  const geos = []; let totalW = 0;
-  for (const ch of WORD) {
-    const geo = new THREE.TextGeometry(ch, {
-      font, size:FS, height:.55, curveSegments:8,
-      bevelEnabled:true, bevelThickness:.055, bevelSize:.035, bevelSegments:3,
-    });
-    geo.computeBoundingBox();
-    const w = geo.boundingBox.max.x - geo.boundingBox.min.x;
-    geos.push({geo, w}); totalW += w + GAP;
-  }
-  totalW -= GAP;
-  let x = -totalW/2;
-  WORD.split('').forEach((ch, i) => {
-    const {geo, w} = geos[i];
-    geo.center();
-    const hue = .60 + i*.013;
-    const mat = new THREE.MeshStandardMaterial({
-      color:     new THREE.Color().setHSL(hue,.55,.75),
-      metalness: .82, roughness: .14,
-      emissive:  new THREE.Color().setHSL(hue,.6,.12),
-      emissiveIntensity: .4,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    const hx   = x + w/2;
-    mesh.position.set(hx,0,0);
-    mesh.castShadow = true; mesh.receiveShadow = true;
-    scene.add(mesh);
-    const home = { pos:new THREE.Vector3(hx,0,0), rot:new THREE.Euler(), scale:new THREE.Vector3(1,1,1) };
-    letters.push({ mesh, ch, home, cur:{ pos:home.pos.clone(), rot:new THREE.Euler(), scale:new THREE.Vector3(1,1,1) } });
-    x += w + GAP;
-  });
-}
+function clearHL(){ setHL('__'); }
 
 // ── Cursor ────────────────────────────────────────────────────────────────────
-const curEl = document.getElementById('cur');
-let cx = innerWidth/2, cy = innerHeight/2;
-curEl.style.left = cx+'px'; curEl.style.top = cy+'px';
+const curEl=document.getElementById('cur');
+let cx=innerWidth/2, cy=innerHeight/2;
+curEl.style.left=cx+'px'; curEl.style.top=cy+'px';
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
-const modeEl = document.getElementById('modeEl');
-const ltEl   = document.getElementById('ltEl');
-const rand = (a,b) => a+Math.random()*(b-a);
-const eio  = t => t<.5?2*t*t:-1+(4-2*t)*t;
-const lerp = (a,b,t) => a+(b-a)*t;
-const wait = ms => new Promise(r=>setTimeout(r,ms));
-const w2s  = v3 => { const v=v3.clone().project(camera); return {x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight}; };
+const modeEl=document.getElementById('modeEl'), ltEl=document.getElementById('ltEl');
+const rand=(a,b)=>a+Math.random()*(b-a);
+const eio=t=>t<.5?2*t*t:-1+(4-2*t)*t;
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const w2s=v3=>{const v=v3.clone().project(camera);return{x:(v.x*.5+.5)*innerWidth,y:(-v.y*.5+.5)*innerHeight};};
 
-function moveCursor(tx,ty,dur) {
-  return new Promise(res => {
-    const sx=cx,sy=cy, d=Math.hypot(tx-sx,ty-sy);
+function moveCursor(tx,ty,dur){
+  return new Promise(res=>{
+    const sx=cx,sy=cy,d=Math.hypot(tx-sx,ty-sy);
     const c1x=sx+(tx-sx)*.3+rand(-1,1)*d*.2, c1y=sy+(ty-sy)*.3+rand(-1,1)*d*.2;
-    const c2x=sx+(tx-sx)*.7+rand(-1,1)*d*.12, c2y=sy+(ty-sy)*.7+rand(-1,1)*d*.12;
+    const c2x=sx+(tx-sx)*.7+rand(-1,1)*d*.12,c2y=sy+(ty-sy)*.7+rand(-1,1)*d*.12;
     const t0=performance.now();
     (function tick(){
-      const t=Math.min((performance.now()-t0)/(dur*1000),1), e=eio(t), m=1-e;
+      const t=Math.min((performance.now()-t0)/(dur*1000),1),e=eio(t),m=1-e;
       cx=m*m*m*sx+3*m*m*e*c1x+3*m*e*e*c2x+e*e*e*tx+(1-t)*rand(-1.5,1.5);
       cy=m*m*m*sy+3*m*m*e*c1y+3*m*e*e*c2y+e*e*e*ty+(1-t)*rand(-1.5,1.5);
       curEl.style.left=cx+'px'; curEl.style.top=cy+'px';
-      t<1 ? requestAnimationFrame(tick) : res();
+      t<1?requestAnimationFrame(tick):res();
     })();
   });
 }
 
-// ── Letter animation ─────────────────────────────────────────────────────────
-function animLetter(L, toPos, toRot, toScale, dur) {
-  return new Promise(res => {
-    const fp=L.cur.pos.clone(), fq=new THREE.Quaternion().setFromEuler(L.cur.rot);
-    const tq=new THREE.Quaternion().setFromEuler(toRot), fs=L.cur.scale.clone();
+function animLetter(L,toPos,toRot,toScale,dur){
+  return new Promise(res=>{
+    const fp=L.cur.pos.clone(),fq=new THREE.Quaternion().setFromEuler(L.cur.rot);
+    const tq=new THREE.Quaternion().setFromEuler(toRot),fs=L.cur.scale.clone();
     const t0=performance.now();
     (function tick(){
-      const t=Math.min((performance.now()-t0)/(dur*1000),1), e=eio(t);
+      const t=Math.min((performance.now()-t0)/(dur*1000),1),e=eio(t);
       L.mesh.position.lerpVectors(fp,toPos,e);
       L.mesh.quaternion.slerpQuaternions(fq,tq,e);
       L.mesh.scale.lerpVectors(fs,toScale,e);
       moveGizmo(L.mesh.position);
-      if (t<1) {
+      if(t<1){
         const sp=w2s(L.mesh.position);
         cx+=(sp.x-cx)*.07; cy+=(sp.y-cy)*.07;
         curEl.style.left=cx+'px'; curEl.style.top=cy+'px';
         requestAnimationFrame(tick);
       } else {
-        L.cur.pos.copy(toPos); L.cur.rot.copy(toRot); L.cur.scale.copy(toScale);
-        res();
+        L.cur.pos.copy(toPos); L.cur.rot.copy(toRot); L.cur.scale.copy(toScale); res();
       }
     })();
   });
 }
 
-// ── Main sequence ─────────────────────────────────────────────────────────────
-async function runSequence() {
-  const TYPES = ['translate','rotate','scale'];
-  const AXES  = ['x','y','z'];
-  while (true) {
-    const count = Math.floor(rand(3,6));
-    const idxs  = [...Array(letters.length).keys()].sort(()=>Math.random()-.5).slice(0,count);
-
-    for (const idx of idxs) {
-      const L = letters[idx];
-      ltEl.textContent = L.ch.toUpperCase();
-
-      // Move cursor to letter
-      const sp0 = w2s(L.cur.pos);
-      await moveCursor(sp0.x+rand(-12,12), sp0.y+rand(-12,12), rand(.5,1.0));
+// ── Sequence ──────────────────────────────────────────────────────────────────
+async function runSequence(){
+  const TYPES=['translate','rotate','scale'], AXES=['x','y','z'];
+  while(true){
+    const count=Math.floor(rand(3,6));
+    const idxs=[...Array(letters.length).keys()].sort(()=>Math.random()-.5).slice(0,count);
+    for(const idx of idxs){
+      const L=letters[idx];
+      ltEl.textContent=L.ch.toUpperCase();
+      const sp0=w2s(L.cur.pos);
+      await moveCursor(sp0.x+rand(-12,12),sp0.y+rand(-12,12),rand(.5,1.0));
       await wait(rand(60,140));
-
-      // Click flash
-      L.mesh.material.emissiveIntensity = 2.0; await wait(70);
-      L.mesh.material.emissiveIntensity = 0.4;  await wait(90);
-
-      // Show gizmo
-      const type = TYPES[Math.floor(Math.random()*TYPES.length)];
-      modeEl.textContent = type[0].toUpperCase()+type.slice(1);
-      showGizmo(type, L.cur.pos.clone());
-      await wait(130);
-
-      // Move cursor to gizmo handle
-      const axis = AXES[Math.floor(Math.random()*AXES.length)];
-      const hs = handleScreenPos(axis);
-      if (hs) {
-        await moveCursor(hs.x+rand(-5,5), hs.y+rand(-5,5), rand(.3,.65));
-        await wait(rand(55,110));
-        setHighlight(axis);
-        await wait(80);
-      }
-
-      // Target transform
-      const toPos   = L.cur.pos.clone();
-      const toRot   = new THREE.Euler(L.cur.rot.x, L.cur.rot.y, L.cur.rot.z);
-      const toScale = L.cur.scale.clone();
-      if (type==='translate') {
-        toPos.x+=rand(-3.5,3.5); toPos.y+=rand(-1.5,2.5); toPos.z+=rand(-4,4);
-      } else if (type==='rotate') {
-        toRot.x+=rand(-Math.PI,Math.PI); toRot.y+=rand(-Math.PI,Math.PI); toRot.z+=rand(-.7,.7);
-      } else {
-        const s=rand(.45,2.3); toScale.set(s,s,s);
-      }
-
-      await animLetter(L, toPos, toRot, toScale, rand(.75,1.6));
-      clearHighlight();
-      await wait(rand(150,380));
+      // click flash – brighten emissive on all materials
+      L.mesh.material.forEach?.(m=>{ if(m.emissive) m.emissive.setScalar(.8); });
+      await wait(70);
+      L.mesh.material.forEach?.(m=>{ if(m.emissive) m.emissive.setScalar(0); });
+      await wait(90);
+      const type=TYPES[Math.floor(Math.random()*TYPES.length)];
+      modeEl.textContent=type[0].toUpperCase()+type.slice(1);
+      showGizmo(type,L.cur.pos.clone()); await wait(130);
+      const axis=AXES[Math.floor(Math.random()*AXES.length)];
+      const hs=handleScreen(axis);
+      if(hs){ await moveCursor(hs.x+rand(-5,5),hs.y+rand(-5,5),rand(.3,.65)); await wait(rand(55,110)); setHL(axis); await wait(80); }
+      const toPos=L.cur.pos.clone();
+      const toRot=new THREE.Euler(L.cur.rot.x,L.cur.rot.y,L.cur.rot.z);
+      const toScale=L.cur.scale.clone();
+      if(type==='translate'){ toPos.x+=rand(-3.5,3.5); toPos.y+=rand(-1.5,2.5); toPos.z+=rand(-4,4); }
+      else if(type==='rotate'){ toRot.x+=rand(-Math.PI,Math.PI); toRot.y+=rand(-Math.PI,Math.PI); toRot.z+=rand(-.7,.7); }
+      else { const s=rand(.45,2.3); toScale.set(s,s,s); }
+      await animLetter(L,toPos,toRot,toScale,rand(.75,1.6));
+      clearHL(); await wait(rand(150,380));
     }
-
-    // Reset
     modeEl.textContent='Reset'; ltEl.textContent='—';
-    for (const idx of idxs) {
-      const L = letters[idx];
-      hideGizmo(); showGizmo('translate', L.cur.pos.clone());
+    for(const idx of idxs){
+      const L=letters[idx];
+      hideGizmo(); showGizmo('translate',L.cur.pos.clone());
       const sp=w2s(L.cur.pos);
-      await moveCursor(sp.x+rand(-8,8), sp.y+rand(-8,8), rand(.3,.6));
-      await animLetter(L, L.home.pos.clone(), new THREE.Euler(), new THREE.Vector3(1,1,1), rand(.55,1.0));
-      hideGizmo();
-      await wait(rand(55,150));
+      await moveCursor(sp.x+rand(-8,8),sp.y+rand(-8,8),rand(.3,.6));
+      await animLetter(L,L.home.pos.clone(),new THREE.Euler(),new THREE.Vector3(1,1,1),rand(.55,1.0));
+      hideGizmo(); await wait(rand(55,150));
     }
     await wait(rand(500,1100));
   }
 }
 
 // ── Render loop ───────────────────────────────────────────────────────────────
-const clock = new THREE.Clock();
+const clock=new THREE.Clock();
 (function render(){
   requestAnimationFrame(render);
-  const t = clock.getElapsedTime();
-  camera.position.x = Math.sin(t*.11)*2.8;
-  camera.position.y = 3.5+Math.sin(t*.08)*.8;
+  const t=clock.getElapsedTime();
+  camera.position.x=Math.sin(t*.11)*2.8;
+  camera.position.y=3.5+Math.sin(t*.08)*.8;
   camera.lookAt(0,.5,0);
   renderer.clear();
-  renderer.render(scene, camera);
-  renderer.clearDepth();       // gizmo always on top
-  renderer.render(gScene, camera);
+  renderer.render(scene,camera);
+  renderer.clearDepth();
+  renderer.render(gScene,camera);
 })();
 
-// ── Init ─────────────────────────────────────────────────────────────────────
-new THREE.FontLoader().load(
-  'https://cdn.jsdelivr.net/npm/three@0.148.0/examples/fonts/helvetiker_bold.typeface.json',
-  font => { buildLetters(font); setTimeout(runSequence, 800); }
-);
+setTimeout(runSequence, 400);
 
-window.addEventListener('resize', () => {
-  camera.aspect = innerWidth/innerHeight;
+window.addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
+  renderer.setSize(innerWidth,innerHeight);
 });
 </script>
 </body>
