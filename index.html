@@ -631,25 +631,10 @@ async function drawWordStrokes(letterH, spc=0.18, startX=null, startY=null){
     // Random tilt: mostly slight, sometimes dramatic
     const angle = Math.random()<0.60 ? rand(-0.22,0.22) : rand(-0.55,0.55);
 
-    // Style: outline only / hatch only / both
-    const roll = Math.random();
-    const doOutline = roll > 0.12;          // 88% draw strokes
-    const doHatch   = roll < 0.38;          // 38% also hatch
-
-    if(doOutline){
-      const paths = letterCanvasPaths(key, cx, ly, lh);
-      for(const p of paths){
-        await drawPath(rotatePoints(p, angle, lcx, lcy), spd);
-        await sleep(rand(2,8));
-      }
-    }
-
-    if(doHatch){
-      // Switch to pencil size 1 for hatching, then restore
-      const savedTool=cur.tool, savedSize=cur.size;
-      cur.setTool('pencil'); cur.setSize(1);
-      await hatchLetter(lcx, lcy, lw, lh, angle, lh*rand(0.08,0.17));
-      cur.setTool(savedTool); cur.setSize(savedSize);
+    const paths = letterCanvasPaths(key, cx, ly, lh);
+    for(const p of paths){
+      await drawPath(rotatePoints(p, angle, lcx, lcy), spd);
+      await sleep(rand(2,8));
     }
 
     cx += lw + spc*letterH;
