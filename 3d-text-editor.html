@@ -30,10 +30,10 @@
   3D TEXT EDITOR &nbsp;·&nbsp; Mode: <b id="modeEl">—</b> &nbsp;·&nbsp; Letter: <b id="ltEl">—</b>
 </div>
 
-<script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
-import { FontLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FontLoader.js';
-import { TextGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/TextGeometry.js';
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/FontLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/geometries/TextGeometry.js"></script>
+<script>
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const Y_UP = new THREE.Vector3(0,1,0);
@@ -224,7 +224,7 @@ function buildLetters(font) {
   const FS = 1.7, GAP = 0.18;
   const geos = []; let totalW = 0;
   for (const ch of WORD) {
-    const geo = new TextGeometry(ch, {
+    const geo = new THREE.TextGeometry(ch, {
       font, size:FS, height:.55, curveSegments:8,
       bevelEnabled:true, bevelThickness:.055, bevelSize:.035, bevelSegments:3,
     });
@@ -394,7 +394,7 @@ const clock = new THREE.Clock();
 })();
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-new FontLoader().load(
+new THREE.FontLoader().load(
   'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_bold.typeface.json',
   font => { buildLetters(font); setTimeout(runSequence, 800); }
 );
