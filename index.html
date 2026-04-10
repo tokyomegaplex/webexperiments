@@ -27,7 +27,7 @@ body{width:100vw;height:100vh;overflow:hidden;background:#008080;font-family:"MS
 .szo.active{border-color:#000080;background:#d8d8ee}
 .szd{background:#000;border-radius:50%}
 #cwrap{flex:1;background:#808080;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden}
-canvas#c{background:#fff;display:block;box-shadow:1px 1px 0 #404040,2px 2px 0 #000;cursor:none}
+canvas#c{background:#fff;display:block;box-shadow:1px 1px 0 #404040,2px 2px 0 #000;cursor:crosshair}
 #selcvs{position:absolute;pointer-events:none;z-index:50}
 #cursel{position:absolute;top:0;left:0;pointer-events:none;z-index:200;will-change:transform}
 #bottomarea{flex-shrink:0}
@@ -916,6 +916,68 @@ function animLoop(ts){
   requestAnimationFrame(animLoop);
 }
 
+// ── User interaction ──────────────────────────────────────────────────
+// Let the user draw on the canvas and click toolbar/palette buttons
+let userDrawing=false;
+
+function userPointerPos(e){
+  const r=canvas.getBoundingClientRect();
+  return {x:(e.clientX-r.left),y:(e.clientY-r.top)};
+}
+function userAppPos(e){
+  const r=app.getBoundingClientRect();
+  return {x:e.clientX-r.left, y:e.clientY-r.top};
+}
+
+function setupUserInput(){
+  // Toolbar buttons — clicking switches tool for both user and AI
+  document.querySelectorAll('.tbtn[id^="btn-"]').forEach(btn=>{
+    btn.addEventListener('click',e=>{
+      const t=btn.id.replace('btn-','');
+      if(TOOLS_STROKE.includes(t)||t==='text'||t==='bucket'||t==='select'){
+        cur.setTool(t);
+        e.stopPropagation();
+      }
+    });
+  });
+
+  // Palette swatches — clicking changes color for both user and AI
+  document.querySelectorAll('.sw').forEach(sw=>{
+    sw.addEventListener('click',e=>{
+      cur.setColor(sw.dataset.c);
+      e.stopPropagation();
+    });
+  });
+
+  // Size picker
+  document.querySelectorAll('.szo').forEach(el=>{
+    el.addEventListener('click',e=>{
+      cur.setSize(Number(el.dataset.s));
+      e.stopPropagation();
+    });
+  });
+
+  // Canvas drawing — user draws with current tool
+  let lastUx=0, lastUy=0;
+  canvas.addEventListener('pointerdown',e=>{
+    if(cur.tool==='pencil'||cur.tool==='brush'||cur.tool==='spray'||cur.tool==='callig'||cur.tool==='shade'){
+      userDrawing=true;
+      canvas.setPointerCapture(e.pointerId);
+      const p=userPointerPos(e);
+      lastUx=p.x; lastUy=p.y;
+    }
+  });
+  canvas.addEventListener('pointermove',e=>{
+    if(!userDrawing) return;
+    const p=userPointerPos(e);
+    applyStroke(lastUx + canvasOffset().ox, lastUy + canvasOffset().oy,
+                p.x    + canvasOffset().ox, p.y    + canvasOffset().oy);
+    lastUx=p.x; lastUy=p.y;
+  });
+  canvas.addEventListener('pointerup',  ()=>{ userDrawing=false; });
+  canvas.addEventListener('pointerleave',()=>{ userDrawing=false; });
+}
+
 // ── Init ──────────────────────────────────────────────────────────────
 function init(){
   // White canvas
@@ -936,6 +998,9 @@ function init(){
 
   // Position overlay canvas
   positionOverlay();
+
+  // Wire up user input
+  setupUserInput();
 
   // Start loops
   requestAnimationFrame(ts=>{ lastTs=ts; requestAnimationFrame(animLoop); });
