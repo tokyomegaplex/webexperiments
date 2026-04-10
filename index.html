@@ -137,8 +137,9 @@ const stAct  = document.getElementById('st-act');
 const CW = canvas.width, CH = canvas.height;
 
 // ── Letter stroke paths ────────────────────────────────────────────────
-// x in [0, letter.w], y in [0,1] (baseline=1)
+// Uppercase and lowercase variants — drawWordStrokes picks randomly per letter
 const STROKES = {
+  // ── Uppercase ──
   A:{w:.72,s:[[[.50,.04],[.08,.95]],[[.50,.04],[.92,.95]],[[.20,.58],[.80,.58]]]},
   M:{w:.96,s:[[[.08,.95],[.08,.05],[.50,.50],[.92,.05],[.92,.95]]]},
   L:{w:.58,s:[[[.18,.05],[.18,.95],[.90,.95]]]},
@@ -146,7 +147,16 @@ const STROKES = {
   T:{w:.72,s:[[[.04,.07],[.96,.07]],[[.50,.07],[.50,.95]]]},
   I:{w:.46,s:[[[.12,.07],[.88,.07]],[[.50,.07],[.50,.95]],[[.12,.95],[.88,.95]]]},
   O:{w:.72,s:[[[.50,.04],[.82,.09],[.96,.30],[.96,.56],[.88,.78],[.68,.94],[.50,.97],[.30,.94],[.12,.78],[.04,.56],[.04,.30],[.18,.09],[.50,.04]]]},
-  N:{w:.72,s:[[[.08,.95],[.08,.06],[.90,.92],[.90,.06]]]}
+  N:{w:.72,s:[[[.08,.95],[.08,.06],[.90,.92],[.90,.06]]]},
+  // ── Lowercase ──
+  a:{w:.62,s:[[[.62,.27],[.50,.08],[.28,.07],[.10,.24],[.08,.50],[.12,.76],[.32,.93],[.55,.91],[.65,.73],[.65,.48],[.62,.27],[.62,.93]]]},
+  m:{w:.92,s:[[[.08,.93],[.08,.30]],[[.08,.30],[.14,.12],[.30,.08],[.45,.18],[.48,.36],[.48,.93]],[[.48,.36],[.55,.12],[.71,.08],[.86,.18],[.88,.36],[.88,.93]]]},
+  l:{w:.30,s:[[[.50,.04],[.48,.30],[.46,.65],[.46,.93]]]},
+  g:{w:.66,s:[[[.62,.27],[.50,.08],[.28,.07],[.10,.24],[.08,.50],[.12,.76],[.32,.93],[.55,.91],[.65,.73],[.65,.48],[.62,.27],[.65,.93],[.65,1.12],[.52,1.24],[.32,1.24],[.14,1.14],[.08,1.02]]]},
+  t:{w:.50,s:[[[.50,.04],[.50,.36],[.50,.70],[.48,.93]],[[.10,.40],[.30,.37],[.50,.35],[.72,.37],[.92,.40]]]},
+  i:{w:.28,s:[[[.50,.10],[.53,.08],[.56,.11],[.52,.14],[.50,.10]],[[.50,.29],[.50,.61],[.50,.93]]]},
+  o:{w:.62,s:[[[.50,.08],[.72,.10],[.88,.28],[.91,.50],[.88,.73],[.71,.91],[.50,.93],[.28,.91],[.12,.73],[.10,.50],[.12,.28],[.28,.10],[.50,.08]]]},
+  n:{w:.62,s:[[[.08,.93],[.08,.50],[.08,.28],[.18,.12],[.38,.08],[.58,.15],[.68,.35],[.71,.62],[.71,.93]]]}
 };
 const WORD = 'AMALGAMATION';
 
@@ -399,11 +409,11 @@ function applyStroke(ax1,ay1,ax2,ay2){
     for(let i=0;i<=steps;i++){
       const t=steps?i/steps:0;
       const bx=lerp(x1,x2,t), by=lerp(y1,y2,t);
-      for(let j=0;j<10;j++){
-        const a=Math.random()*Math.PI*2, r=Math.random()*size*5;
-        ctx.globalAlpha=Math.random()*0.6+0.15;
+      for(let j=0;j<7;j++){
+        const a=Math.random()*Math.PI*2, r=Math.random()*size*2.5;
+        ctx.globalAlpha=Math.random()*0.55+0.25;
         ctx.beginPath();
-        ctx.arc(bx+Math.cos(a)*r, by+Math.sin(a)*r, Math.random()*1.5+0.5, 0, Math.PI*2);
+        ctx.arc(bx+Math.cos(a)*r, by+Math.sin(a)*r, Math.random()*1.2+0.4, 0, Math.PI*2);
         ctx.fill();
       }
     }
@@ -574,11 +584,14 @@ async function drawWordStrokes(letterH, spc=0.18, startX=null, startY=null){
   const sy = startY !== null ? startY : (CH-letterH)/2 - letterH*0.1;
   let cx=sx;
   for(const ch of WORD){
-    const d=STROKES[ch]; if(!d){cx+=letterH*spc;continue;}
+    // Randomly pick upper or lowercase variant if both exist
+    const lower=ch.toLowerCase();
+    const key=(STROKES[lower]&&Math.random()<0.5)?lower:ch;
+    const d=STROKES[key]; if(!d){cx+=letterH*spc;continue;}
     // Per-letter: slight size wobble + baseline drift = hand-drawn feel
     const lh=letterH*rand(0.93,1.07);
     const baseWobble=rand(-letterH*0.06,letterH*0.06);
-    const paths=letterCanvasPaths(ch,cx,sy+baseWobble,lh);
+    const paths=letterCanvasPaths(key,cx,sy+baseWobble,lh);
     const spd = cur.tool==='spray'?5000 : cur.tool==='brush'?4000 : cur.tool==='callig'?4500 : cur.tool==='shade'?4000 : 5000;
     for(const p of paths){
       await drawPath(p, spd);
@@ -635,10 +648,13 @@ async function drawWithTextTool(scheme, letterH){
   const textColor = cur.color;
 
   // 3. Measure total width to center the text
+  // Generate mixed-case version for this cycle
+  const displayWord=Array.from(WORD).map(ch=>Math.random()<0.5?ch:ch.toLowerCase()).join('');
+
   ctx.save(); ctx.font=fnt; ctx.textBaseline='alphabetic';
   const KERN=Math.round(letterH*0.02); // tiny inter-char spacing
   let totalW=0;
-  for(const ch of WORD) totalW+=ctx.measureText(ch).width+KERN;
+  for(const ch of displayWord) totalW+=ctx.measureText(ch).width+KERN;
   totalW-=KERN;
   ctx.restore();
 
@@ -659,14 +675,14 @@ async function drawWithTextTool(scheme, letterH){
 
   // 5. Type each character
   let insertX=textX;
-  for(let ci=0;ci<WORD.length;ci++){
-    const ch=WORD[ci];
+  for(let ci=0;ci<displayWord.length;ci++){
+    const ch=displayWord[ci];
 
     // Human typing rhythm: mostly fast, occasional pauses
     const r=Math.random();
-    const delay = r<0.08 ? rand(35,70)    // long hesitation
-                : r<0.25 ? rand(14,26)    // medium pause
-                :           rand(4,11);   // normal keystroke
+    const delay = r<0.08 ? rand(280,550)   // long hesitation
+                : r<0.25 ? rand(120,220)  // medium pause
+                :           rand(55,110); // normal keystroke
     await sleep(delay);
 
     // Render character
