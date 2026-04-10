@@ -152,7 +152,7 @@ const STROKES = {
   a:{w:.62,s:[[[.62,.27],[.50,.08],[.28,.07],[.10,.24],[.08,.50],[.12,.76],[.32,.93],[.55,.91],[.65,.73],[.65,.48],[.62,.27],[.62,.93]]]},
   m:{w:.92,s:[[[.08,.93],[.08,.30]],[[.08,.30],[.14,.12],[.30,.08],[.45,.18],[.48,.36],[.48,.93]],[[.48,.36],[.55,.12],[.71,.08],[.86,.18],[.88,.36],[.88,.93]]]},
   l:{w:.30,s:[[[.50,.04],[.48,.30],[.46,.65],[.46,.93]]]},
-  g:{w:.66,s:[[[.62,.27],[.50,.08],[.28,.07],[.10,.24],[.08,.50],[.12,.76],[.32,.93],[.55,.91],[.65,.73],[.65,.48],[.62,.27],[.65,.93],[.65,1.12],[.52,1.24],[.32,1.24],[.14,1.14],[.08,1.02]]]},
+  g:{w:.66,s:[[[.62,.08],[.44,.02],[.22,.06],[.08,.20],[.04,.38],[.08,.56],[.22,.68],[.42,.72],[.60,.68],[.72,.54],[.72,.34],[.62,.08]],[[.72,.34],[.76,.54],[.74,.72],[.62,.85],[.44,.90],[.24,.88],[.10,.78],[.06,.62],[.10,.50],[.24,.44],[.44,.40],[.62,.42],[.74,.54]]]},
   t:{w:.50,s:[[[.50,.04],[.50,.36],[.50,.70],[.48,.93]],[[.10,.40],[.30,.37],[.50,.35],[.72,.37],[.92,.40]]]},
   i:{w:.28,s:[[[.50,.10],[.53,.08],[.56,.11],[.52,.14],[.50,.10]],[[.50,.29],[.50,.61],[.50,.93]]]},
   o:{w:.62,s:[[[.50,.08],[.72,.10],[.88,.28],[.91,.50],[.88,.73],[.71,.91],[.50,.93],[.28,.91],[.12,.73],[.10,.50],[.12,.28],[.28,.10],[.50,.08]]]},
@@ -466,6 +466,13 @@ function jitterStroke(stroke, amt){
   });
 }
 
+// Rotate canvas-space points around (cx,cy) by angle radians
+function rotatePoints(pts, angle, cx, cy){
+  if(Math.abs(angle)<0.005) return pts;
+  const c=Math.cos(angle), s=Math.sin(angle);
+  return pts.map(p=>({x:cx+(p.x-cx)*c-(p.y-cy)*s, y:cy+(p.x-cx)*s+(p.y-cy)*c}));
+}
+
 function wordTotalWidth(h, spc=0.18){
   let w=0;
   for(const ch of WORD){
@@ -484,6 +491,26 @@ function letterCanvasPaths(ch, ox, oy, h, jitter=0.038){
     const jit=jitter>0 ? jitterStroke(stroke,jitter) : stroke;
     return catmullSample(jit,10).map(p=>({x:ox+p.x*lw, y:oy+p.y*h}));
   });
+}
+
+// Pencil crosshatch fill through a letter's bounding box
+async function hatchLetter(lcx, lcy, lw, lh, tilt, spacing){
+  const passes = Math.random()<0.45 ? 1 : 2;
+  const baseAngle = rand(Math.PI*0.18, Math.PI*0.45);
+  for(let pass=0; pass<passes; pass++){
+    const angle = tilt + baseAngle + pass*(Math.PI*0.5 + rand(-0.15,0.15));
+    const cos=Math.cos(angle), sin=Math.sin(angle);
+    const perpLen = Math.abs(lw*sin) + Math.abs(lh*cos) + lh*0.25;
+    const lineHalf= (Math.abs(lw*cos) + Math.abs(lh*sin))*0.55;
+    for(let d=-perpLen/2; d<=perpLen/2; d+=spacing){
+      const mx=lcx+(-sin)*d+rand(-spacing*0.18,spacing*0.18);
+      const my=lcy+( cos)*d+rand(-spacing*0.18,spacing*0.18);
+      const xLen=lineHalf+rand(-lineHalf*0.12,lineHalf*0.12);
+      await drawPath([{x:mx-cos*xLen,y:my-sin*xLen},{x:mx+cos*xLen,y:my+sin*xLen}], 6000);
+      await sleep(rand(1,4));
+    }
+    if(passes>1) await sleep(rand(5,15));
+  }
 }
 
 // ── Selection / transform state ───────────────────────────────────────
@@ -581,24 +608,52 @@ async function pickColor(hex){
 async function drawWordStrokes(letterH, spc=0.18, startX=null, startY=null){
   const tw=wordTotalWidth(letterH,spc);
   const sx = startX !== null ? startX : Math.max(10,(CW-tw)/2);
-  const sy = startY !== null ? startY : (CH-letterH)/2 - letterH*0.1;
+  const sy = startY !== null ? startY : CH/2 - letterH*0.5;
   let cx=sx;
+  const spd = cur.tool==='spray'?5000 : cur.tool==='brush'?4000 : cur.tool==='callig'?4500 : cur.tool==='shade'?4000 : 5000;
+
   for(const ch of WORD){
-    // Randomly pick upper or lowercase variant if both exist
+    // Random upper/lower per letter
     const lower=ch.toLowerCase();
     const key=(STROKES[lower]&&Math.random()<0.5)?lower:ch;
     const d=STROKES[key]; if(!d){cx+=letterH*spc;continue;}
-    // Per-letter: slight size wobble + baseline drift = hand-drawn feel
-    const lh=letterH*rand(0.93,1.07);
-    const baseWobble=rand(-letterH*0.06,letterH*0.06);
-    const paths=letterCanvasPaths(key,cx,sy+baseWobble,lh);
-    const spd = cur.tool==='spray'?5000 : cur.tool==='brush'?4000 : cur.tool==='callig'?4500 : cur.tool==='shade'?4000 : 5000;
-    for(const p of paths){
-      await drawPath(p, spd);
-      await sleep(rand(3,10));
+
+    // Dramatic per-letter size variation — some tiny, some huge
+    const lh = letterH * rand(0.45, 1.70);
+    const lw = d.w * lh;
+
+    // Baseline hop — letters sit at different heights
+    const baseWobble = rand(-letterH*0.25, letterH*0.20);
+    const ly = sy + baseWobble;
+    const lcx = cx + lw*0.5;
+    const lcy = ly + lh*0.5;
+
+    // Random tilt: mostly slight, sometimes dramatic
+    const angle = Math.random()<0.60 ? rand(-0.22,0.22) : rand(-0.55,0.55);
+
+    // Style: outline only / hatch only / both
+    const roll = Math.random();
+    const doOutline = roll > 0.12;          // 88% draw strokes
+    const doHatch   = roll < 0.38;          // 38% also hatch
+
+    if(doOutline){
+      const paths = letterCanvasPaths(key, cx, ly, lh);
+      for(const p of paths){
+        await drawPath(rotatePoints(p, angle, lcx, lcy), spd);
+        await sleep(rand(2,8));
+      }
     }
-    cx+=d.w*lh+spc*letterH;
-    await sleep(rand(8,25));
+
+    if(doHatch){
+      // Switch to pencil size 1 for hatching, then restore
+      const savedTool=cur.tool, savedSize=cur.size;
+      cur.setTool('pencil'); cur.setSize(1);
+      await hatchLetter(lcx, lcy, lw, lh, angle, lh*rand(0.08,0.17));
+      cur.setTool(savedTool); cur.setSize(savedSize);
+    }
+
+    cx += lw + spc*letterH;
+    await sleep(rand(6,20));
   }
 }
 
