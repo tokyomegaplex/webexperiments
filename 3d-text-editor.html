@@ -30,9 +30,9 @@
   3D TEXT EDITOR &nbsp;·&nbsp; Mode: <b id="modeEl">—</b> &nbsp;·&nbsp; Letter: <b id="ltEl">—</b>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/FontLoader.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/geometries/TextGeometry.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.148.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.148.0/examples/js/loaders/FontLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.148.0/examples/js/geometries/TextGeometry.js"></script>
 <script>
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -395,7 +395,7 @@ const clock = new THREE.Clock();
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 new THREE.FontLoader().load(
-  'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_bold.typeface.json',
+  'https://cdn.jsdelivr.net/npm/three@0.148.0/examples/fonts/helvetiker_bold.typeface.json',
   font => { buildLetters(font); setTimeout(runSequence, 800); }
 );
 
