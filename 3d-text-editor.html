@@ -29,9 +29,51 @@
   3D TEXT EDITOR &nbsp;·&nbsp; Mode: <b id="modeEl">—</b> &nbsp;·&nbsp; Letter: <b id="ltEl">—</b>
 </div>
 
-<!-- Single dependency: Three.js core only -->
 <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
 <script>
+// ── Inline font (Helvetiker subset: a g i l m n o t) ─────────────────────────
+const FONT_DATA = {"familyName":"Helvetiker","resolution":1000,"boundingBox":{"yMin":-334,"xMin":-111,"yMax":1189,"xMax":1672},"underlineThickness":50,"glyphs":{"g":{"x_min":0,"x_max":686,"ha":838,"o":"m 686 34 q 586 -213 686 -121 q 331 -306 487 -306 q 131 -252 216 -306 q 31 -84 31 -190 l 155 -84 q 228 -174 166 -138 q 345 -207 284 -207 q 514 -109 454 -207 q 564 89 564 -27 q 461 6 521 36 q 335 -23 401 -23 q 88 100 184 -23 q 0 370 0 215 q 87 634 0 522 q 330 758 183 758 q 457 728 398 758 q 564 644 515 699 l 564 737 l 686 737 l 686 34 m 582 367 q 529 560 582 481 q 358 652 468 652 q 189 561 250 652 q 135 369 135 482 q 189 176 135 255 q 361 85 251 85 q 529 176 468 85 q 582 367 582 255 "},"a":{"x_min":0,"x_max":698.609375,"ha":794,"o":"m 698 0 q 661 -12 679 -7 q 615 -17 643 -17 q 536 12 564 -17 q 500 96 508 41 q 384 6 456 37 q 236 -25 312 -25 q 65 31 130 -25 q 0 194 0 88 q 118 390 0 334 q 328 435 180 420 q 488 483 476 451 q 495 523 495 504 q 442 619 495 584 q 325 654 389 654 q 209 617 257 654 q 152 513 161 580 l 33 513 q 123 705 33 633 q 332 772 207 772 q 528 712 448 772 q 617 531 617 645 l 617 163 q 624 108 617 126 q 664 90 632 90 l 698 94 l 698 0 m 491 262 l 491 372 q 272 329 350 347 q 128 201 128 294 q 166 113 128 144 q 264 83 205 83 q 414 130 346 83 q 491 262 491 183 "},"i":{"x_min":14,"x_max":136,"ha":275,"o":"m 136 873 l 14 873 l 14 1013 l 136 1013 l 136 873 m 136 0 l 14 0 l 14 737 l 136 737 l 136 0 "},"m":{"x_min":0,"x_max":1019,"ha":1128,"o":"m 1019 0 l 897 0 l 897 454 q 860 591 897 536 q 739 660 816 660 q 613 586 659 660 q 573 436 573 522 l 573 0 l 447 0 l 447 455 q 412 591 447 535 q 294 657 372 657 q 165 586 213 657 q 122 437 122 521 l 122 0 l 0 0 l 0 738 l 117 738 l 117 640 q 202 730 150 697 q 316 763 254 763 q 437 730 381 763 q 525 642 494 697 q 621 731 559 700 q 753 763 682 763 q 943 694 867 763 q 1019 512 1019 625 l 1019 0 "},"o":{"x_min":0,"x_max":713,"ha":821,"o":"m 357 -25 q 94 91 194 -25 q 0 368 0 202 q 93 642 0 533 q 357 761 193 761 q 618 644 518 761 q 713 368 713 533 q 619 91 713 201 q 357 -25 521 -25 m 357 85 q 528 175 465 85 q 584 369 584 255 q 529 562 584 484 q 357 651 467 651 q 189 560 250 651 q 135 369 135 481 q 187 177 135 257 q 357 85 250 85 "},"t":{"x_min":0,"x_max":367,"ha":458,"o":"m 367 0 q 312 -5 339 -2 q 262 -8 284 -8 q 145 28 183 -8 q 108 143 108 64 l 108 638 l 0 638 l 0 738 l 108 738 l 108 944 l 232 944 l 232 738 l 367 738 l 367 638 l 232 638 l 232 185 q 248 121 232 140 q 307 102 264 102 q 345 104 330 102 q 367 107 360 107 l 367 0 "},"n":{"x_min":0,"x_max":615,"ha":724,"o":"m 615 463 l 615 0 l 490 0 l 490 454 q 453 592 490 537 q 331 656 410 656 q 178 585 240 656 q 117 421 117 514 l 117 0 l 0 0 l 0 738 l 117 738 l 117 630 q 218 728 150 693 q 359 764 286 764 q 552 675 484 764 q 615 463 615 593 "},"l":{"x_min":41,"x_max":166,"ha":279,"o":"m 166 0 l 41 0 l 41 1013 l 166 1013 l 166 0 "}}};
+
+// ── Inline Font class (no XHR, no ES modules) ─────────────────────────────────
+class Font {
+  constructor(data) { this.data = data; }
+  generateShapes(text, size) {
+    const shapes = [];
+    const scale = size / this.data.resolution;
+    let offsetX = 0;
+    for (const char of text) {
+      const glyph = this.data.glyphs[char];
+      if (!glyph) { offsetX += size * 0.5; continue; }
+      const path = new THREE.ShapePath();
+      if (glyph.o) {
+        const outline = glyph.o.split(' ');
+        let i = 0;
+        while (i < outline.length) {
+          const action = outline[i++];
+          if (action === 'm') {
+            path.moveTo(outline[i++]*scale+offsetX, outline[i++]*scale);
+          } else if (action === 'l') {
+            path.lineTo(outline[i++]*scale+offsetX, outline[i++]*scale);
+          } else if (action === 'q') {
+            const ex=outline[i++]*scale+offsetX, ey=outline[i++]*scale;
+            const cx1=outline[i++]*scale+offsetX, cy1=outline[i++]*scale;
+            path.quadraticCurveTo(cx1,cy1,ex,ey);
+          } else if (action === 'b') {
+            const ex=outline[i++]*scale+offsetX, ey=outline[i++]*scale;
+            const cx1=outline[i++]*scale+offsetX, cy1=outline[i++]*scale;
+            const cx2=outline[i++]*scale+offsetX, cy2=outline[i++]*scale;
+            path.bezierCurveTo(cx1,cy1,cx2,cy2,ex,ey);
+          }
+        }
+      }
+      shapes.push({ shapes: path.toShapes(true), advance: glyph.ha * scale });
+      offsetX += glyph.ha * scale;
+    }
+    return shapes;
+  }
+}
+const font = new Font(FONT_DATA);
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 const Y_UP  = new THREE.Vector3(0,1,0);
 const COL   = { x:0xee3333, y:0x33dd55, z:0x3399ff, hi:0xffee00, w:0xffffff };
@@ -56,84 +98,90 @@ const gScene = new THREE.Scene();
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 const camera = new THREE.PerspectiveCamera(48, innerWidth/innerHeight, 0.1, 500);
-camera.position.set(0, 3.5, 30);
+camera.position.set(0, 2.5, 28);
 camera.lookAt(0, 0.5, 0);
 
 // ── Lights ────────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0x223366, 0.8));
-const sun = new THREE.DirectionalLight(0xffffff, 2.5);
-sun.position.set(6,12,8); sun.castShadow = true;
+scene.add(new THREE.AmbientLight(0x334477, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 3.0);
+sun.position.set(6,14,8); sun.castShadow = true;
 sun.shadow.mapSize.set(2048,2048);
 Object.assign(sun.shadow.camera, {left:-30,right:30,top:14,bottom:-14,near:1,far:80});
 scene.add(sun);
-const fill = new THREE.DirectionalLight(0x4466ff, 1.0); fill.position.set(-10,4,3); scene.add(fill);
-const rim  = new THREE.DirectionalLight(0xff5500, 0.6); rim.position.set(3,-6,-10); scene.add(rim);
+const fill = new THREE.DirectionalLight(0x4455ff, 1.2); fill.position.set(-10,4,3); scene.add(fill);
+const rim  = new THREE.DirectionalLight(0xff6600, 0.8); rim.position.set(3,-6,-10); scene.add(rim);
 
 // ── Floor ─────────────────────────────────────────────────────────────────────
 const grid = new THREE.GridHelper(100,60,0x2a2a3a,0x222232);
-grid.position.y = -3.8; scene.add(grid);
-const floorM = new THREE.Mesh(new THREE.PlaneGeometry(100,100), new THREE.ShadowMaterial({opacity:.25}));
-floorM.rotation.x = -Math.PI/2; floorM.position.y = -3.8; floorM.receiveShadow = true; scene.add(floorM);
+grid.position.y = -2.5; scene.add(grid);
+const floorM = new THREE.Mesh(new THREE.PlaneGeometry(100,100), new THREE.ShadowMaterial({opacity:.3}));
+floorM.rotation.x = -Math.PI/2; floorM.position.y = -2.5; floorM.receiveShadow = true; scene.add(floorM);
 
-// ── Letter meshes (canvas texture on box) ────────────────────────────────────
+// ── Letter meshes (extruded 3D type) ─────────────────────────────────────────
 const WORD = 'amalgamation';
 const letters = [];
 
-function makeLetterTexture(ch, hue) {
-  const S = 256;
-  const cv = document.createElement('canvas');
-  cv.width = S; cv.height = S;
-  const ctx = cv.getContext('2d');
-  // Face gradient
-  const g = ctx.createLinearGradient(0,0,S,S);
-  const c1 = `hsl(${hue*360|0},55%,28%)`;
-  const c2 = `hsl(${hue*360|0},45%,18%)`;
-  g.addColorStop(0, c1); g.addColorStop(1, c2);
-  ctx.fillStyle = g; ctx.fillRect(0,0,S,S);
-  // Bevel lines
-  ctx.strokeStyle = `hsla(${hue*360|0},60%,70%,.35)`;
-  ctx.lineWidth = 6;
-  ctx.strokeRect(3,3,S-6,S-6);
-  // Letter
-  ctx.font = '900 160px "Arial Black",Arial,sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = `hsl(${hue*360|0},55%,82%)`;
-  ctx.shadowColor = `hsl(${hue*360|0},80%,60%)`;
-  ctx.shadowBlur = 18;
-  ctx.fillText(ch, S/2, S/2+6);
-  return new THREE.CanvasTexture(cv);
-}
-
 function buildLetters() {
-  // Measure widths proportionally using a temp canvas
-  const tmp = document.createElement('canvas').getContext('2d');
-  tmp.font = '900 180px "Arial Black",Arial,sans-serif';
-  const H = 2.0, DEPTH = 0.5, GAP = 0.12;
-  const chars = WORD.split('');
-  const widths = chars.map(ch => {
-    const w = tmp.measureText(ch).width;
-    return Math.max(w / 180, 0.55) * H * 0.78;
-  });
-  const totalW = widths.reduce((a,b)=>a+b,0) + GAP*(chars.length-1);
+  const SIZE   = 3.2;   // font size → world units via scale = SIZE/resolution
+  const SCALE  = SIZE / FONT_DATA.resolution;
+  const DEPTH  = 0.42;
+  const KERN   = 0.04;  // extra gap between letters
 
-  let x = -totalW/2;
+  const chars = WORD.split('');
+  // Pre-measure advances
+  const advances = chars.map(ch => {
+    const g = FONT_DATA.glyphs[ch];
+    return g ? g.ha * SCALE : SIZE * 0.55;
+  });
+  const totalW = advances.reduce((a,b)=>a+b,0) + KERN*(chars.length-1);
+
+  // Typical lowercase x-height in this font ≈ 530 units → vertically centre letters
+  const yOffset = -530 * SCALE * 0.5; // shift down so letters sit roughly at ±centre
+
+  const extrudeSettings = {
+    depth: DEPTH,
+    bevelEnabled: true,
+    bevelThickness: 0.045,
+    bevelSize: 0.035,
+    bevelSegments: 4,
+    curveSegments: 8,
+  };
+
+  let x = -totalW / 2;
   chars.forEach((ch, i) => {
-    const W = widths[i];
-    const hue = 0.60 + i*0.013;
-    const tex  = makeLetterTexture(ch, hue);
-    const col  = new THREE.Color().setHSL(hue,.45,.35);
-    const face = new THREE.MeshStandardMaterial({ map:tex, metalness:.75, roughness:.18 });
-    const side = new THREE.MeshStandardMaterial({ color:col, metalness:.8, roughness:.2 });
-    const geo  = new THREE.BoxGeometry(W, H, DEPTH);
-    // 6 faces: +x,-x,+y,-y,+z,-z
-    const mesh = new THREE.Mesh(geo, [side,side,side,side,face,side]);
-    const hx   = x + W/2;
-    mesh.position.set(hx, 0, 0);
+    const adv  = advances[i];
+    const letterShapes = font.generateShapes(ch, SIZE);
+    const shapes = letterShapes[0] ? letterShapes[0].shapes : [];
+
+    const geo = new THREE.ExtrudeGeometry(shapes, extrudeSettings);
+    // Centre the geometry at origin (advance/2 horizontally, mid-height vertically)
+    geo.translate(-adv/2, yOffset, -DEPTH/2);
+    geo.computeVertexNormals();
+
+    const hue = 0.60 + i * 0.013;
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(hue, 0.55, 0.52),
+      metalness: 0.82,
+      roughness: 0.14,
+      emissive: new THREE.Color(0x000000),
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    const px = x + adv/2;
+    mesh.position.set(px, 0, 0);
     mesh.castShadow = true; mesh.receiveShadow = true;
     scene.add(mesh);
-    const home = { pos:new THREE.Vector3(hx,0,0), rot:new THREE.Euler(), scale:new THREE.Vector3(1,1,1) };
-    letters.push({ mesh, ch, hue, home, cur:{ pos:home.pos.clone(), rot:new THREE.Euler(), scale:new THREE.Vector3(1,1,1) } });
-    x += W + GAP;
+
+    const home = {
+      pos:   new THREE.Vector3(px, 0, 0),
+      rot:   new THREE.Euler(),
+      scale: new THREE.Vector3(1,1,1),
+    };
+    letters.push({
+      mesh, ch, hue, home,
+      cur: { pos: home.pos.clone(), rot: new THREE.Euler(), scale: new THREE.Vector3(1,1,1) },
+    });
+    x += adv + KERN;
   });
 }
 buildLetters();
@@ -146,203 +194,298 @@ function gMat(color, {opacity=1,side=THREE.FrontSide}={}) {
 // ── Translate gizmo ───────────────────────────────────────────────────────────
 function buildTranslate() {
   const root = new THREE.Group();
-  const axes = [{key:'x',dir:new THREE.Vector3(1,0,0),color:COL.x},{key:'y',dir:new THREE.Vector3(0,1,0),color:COL.y},{key:'z',dir:new THREE.Vector3(0,0,1),color:COL.z}];
+  const axes = [
+    {key:'x',dir:new THREE.Vector3(1,0,0),color:COL.x},
+    {key:'y',dir:new THREE.Vector3(0,1,0),color:COL.y},
+    {key:'z',dir:new THREE.Vector3(0,0,1),color:COL.z},
+  ];
   const hPos={}, hMesh={};
   for (const {key,dir,color} of axes) {
     const mat = gMat(color);
     const shaft = new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,1.1,8), mat);
-    shaft.quaternion.setFromUnitVectors(Y_UP,dir); shaft.position.copy(dir.clone().multiplyScalar(.55)); root.add(shaft);
+    shaft.quaternion.setFromUnitVectors(Y_UP,dir);
+    shaft.position.copy(dir.clone().multiplyScalar(.55)); root.add(shaft);
     const cone = new THREE.Mesh(new THREE.ConeGeometry(.075,.28,8), mat);
-    cone.quaternion.setFromUnitVectors(Y_UP,dir); cone.position.copy(dir.clone().multiplyScalar(1.24)); root.add(cone);
-    hPos[key]=dir.clone().multiplyScalar(1.4); hMesh[key]=[shaft,cone];
+    cone.quaternion.setFromUnitVectors(Y_UP,dir);
+    cone.position.copy(dir.clone().multiplyScalar(1.24)); root.add(cone);
+    hPos[key] = dir.clone().multiplyScalar(1.35);
+    hMesh[key] = [shaft, cone];
   }
+  // Plane handles (XY, XZ, YZ)
   [{pos:new THREE.Vector3(.32,.32,0),n:new THREE.Vector3(0,0,1),c:0xffaa33},
    {pos:new THREE.Vector3(.32,0,.32),n:new THREE.Vector3(0,1,0),c:0x33aaff},
    {pos:new THREE.Vector3(0,.32,.32),n:new THREE.Vector3(1,0,0),c:0x99ff33}].forEach(({pos,n,c})=>{
-    const m=new THREE.Mesh(new THREE.PlaneGeometry(.22,.22),gMat(c,{opacity:.45,side:THREE.DoubleSide}));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(.22,.22), gMat(c,{opacity:.45,side:THREE.DoubleSide}));
     m.position.copy(pos); m.lookAt(pos.clone().add(n)); root.add(m);
   });
-  root.add(new THREE.Mesh(new THREE.SphereGeometry(.055,8,8),gMat(COL.w)));
-  root.userData={hPos,hMesh,type:'translate'}; return root;
+  root.add(new THREE.Mesh(new THREE.SphereGeometry(.055,8,8), gMat(COL.w)));
+  root.userData = {hPos, hMesh, type:'translate'};
+  return root;
 }
 
 // ── Rotate gizmo ─────────────────────────────────────────────────────────────
 function buildRotate() {
   const root = new THREE.Group();
-  const rings=[{key:'x',color:COL.x,rx:0,ry:Math.PI/2,rz:0},{key:'y',color:COL.y,rx:Math.PI/2,ry:0,rz:0},{key:'z',color:COL.z,rx:0,ry:0,rz:0}];
+  const rings = [
+    {key:'x',color:COL.x,rx:0,ry:Math.PI/2,rz:0},
+    {key:'y',color:COL.y,rx:Math.PI/2,ry:0,rz:0},
+    {key:'z',color:COL.z,rx:0,ry:0,rz:0},
+  ];
   const hPos={}, hMesh={};
   for (const {key,color,rx,ry,rz} of rings) {
-    const mat=gMat(color);
-    const torus=new THREE.Mesh(new THREE.TorusGeometry(1.1,.026,8,56),mat);
+    const mat = gMat(color);
+    const torus = new THREE.Mesh(new THREE.TorusGeometry(1.1,.026,8,56), mat);
     torus.rotation.set(rx,ry,rz); root.add(torus);
-    const localTop=new THREE.Vector3(0,1.1,0).applyEuler(new THREE.Euler(rx,ry,rz));
-    const tangent=new THREE.Vector3(1,0,0).applyEuler(new THREE.Euler(rx,ry,rz));
-    const coneM=new THREE.Mesh(new THREE.ConeGeometry(.055,.18,6),gMat(color));
-    coneM.position.copy(localTop); coneM.quaternion.setFromUnitVectors(Y_UP,tangent.normalize()); root.add(coneM);
-    hPos[key]=localTop.clone(); hMesh[key]=[torus,coneM];
+    const localTop = new THREE.Vector3(0,1.1,0).applyEuler(new THREE.Euler(rx,ry,rz));
+    const tangent  = new THREE.Vector3(1,0,0).applyEuler(new THREE.Euler(rx,ry,rz));
+    const coneM = new THREE.Mesh(new THREE.ConeGeometry(.055,.18,6), gMat(color));
+    coneM.position.copy(localTop);
+    coneM.quaternion.setFromUnitVectors(Y_UP, tangent.normalize()); root.add(coneM);
+    hPos[key]  = localTop.clone();
+    hMesh[key] = [torus, coneM];
   }
-  root.add(new THREE.Mesh(new THREE.SphereGeometry(.045,8,8),gMat(COL.w,{opacity:.7})));
-  root.userData={hPos,hMesh,type:'rotate'}; return root;
+  root.add(new THREE.Mesh(new THREE.SphereGeometry(.045,8,8), gMat(COL.w,{opacity:.7})));
+  root.userData = {hPos, hMesh, type:'rotate'};
+  return root;
 }
 
 // ── Scale gizmo ───────────────────────────────────────────────────────────────
 function buildScale() {
-  const root=new THREE.Group();
-  const axes=[{key:'x',dir:new THREE.Vector3(1,0,0),color:COL.x},{key:'y',dir:new THREE.Vector3(0,1,0),color:COL.y},{key:'z',dir:new THREE.Vector3(0,0,1),color:COL.z}];
-  const hPos={},hMesh={};
+  const root = new THREE.Group();
+  const axes = [
+    {key:'x',dir:new THREE.Vector3(1,0,0),color:COL.x},
+    {key:'y',dir:new THREE.Vector3(0,1,0),color:COL.y},
+    {key:'z',dir:new THREE.Vector3(0,0,1),color:COL.z},
+  ];
+  const hPos={}, hMesh={};
   for (const {key,dir,color} of axes) {
-    const mat=gMat(color);
-    const shaft=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,1.1,8),mat);
-    shaft.quaternion.setFromUnitVectors(Y_UP,dir); shaft.position.copy(dir.clone().multiplyScalar(.55)); root.add(shaft);
-    const box=new THREE.Mesh(new THREE.BoxGeometry(.13,.13,.13),mat);
+    const mat = gMat(color);
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,1.1,8), mat);
+    shaft.quaternion.setFromUnitVectors(Y_UP,dir);
+    shaft.position.copy(dir.clone().multiplyScalar(.55)); root.add(shaft);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(.13,.13,.13), mat);
     box.position.copy(dir.clone().multiplyScalar(1.22)); root.add(box);
-    hPos[key]=dir.clone().multiplyScalar(1.32); hMesh[key]=[shaft,box];
+    hPos[key]  = dir.clone().multiplyScalar(1.32);
+    hMesh[key] = [shaft, box];
   }
-  root.add(new THREE.Mesh(new THREE.BoxGeometry(.1,.1,.1),gMat(COL.w)));
-  root.userData={hPos,hMesh,type:'scale'}; return root;
+  root.add(new THREE.Mesh(new THREE.BoxGeometry(.1,.1,.1), gMat(COL.w)));
+  root.userData = {hPos, hMesh, type:'scale'};
+  return root;
 }
 
 // ── Gizmo management ─────────────────────────────────────────────────────────
-let gizmo=null;
-function showGizmo(type,pos) {
-  if(gizmo) gScene.remove(gizmo);
-  gizmo = type==='translate'?buildTranslate():type==='rotate'?buildRotate():buildScale();
-  gizmo.position.copy(pos); gizmo.scale.setScalar(GSCALE); gScene.add(gizmo);
+let gizmo = null;
+function showGizmo(type, pos) {
+  if (gizmo) gScene.remove(gizmo);
+  gizmo = type==='translate' ? buildTranslate() : type==='rotate' ? buildRotate() : buildScale();
+  gizmo.position.copy(pos);
+  gizmo.scale.setScalar(GSCALE);
+  gScene.add(gizmo);
 }
-function moveGizmo(pos){ if(gizmo) gizmo.position.copy(pos); }
-function hideGizmo(){ if(gizmo){gScene.remove(gizmo);gizmo=null;} }
-function handleScreen(key){
-  if(!gizmo) return null;
-  const lp=gizmo.userData.hPos[key]; if(!lp) return null;
-  const wp=gizmo.position.clone().add(lp.clone().multiplyScalar(GSCALE));
-  const v=wp.clone().project(camera);
-  return {x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight};
+function moveGizmo(pos) { if (gizmo) gizmo.position.copy(pos); }
+function hideGizmo()    { if (gizmo) { gScene.remove(gizmo); gizmo = null; } }
+
+// World-space position of a handle key → screen coords
+function handleScreen(key) {
+  if (!gizmo) return null;
+  const lp = gizmo.userData.hPos[key];
+  if (!lp) return null;
+  const wp = gizmo.position.clone().addScaledVector(lp, GSCALE);
+  const v  = wp.clone().project(camera);
+  return { x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight };
 }
-function setHL(key){
-  if(!gizmo) return;
-  Object.entries(gizmo.userData.hMesh).forEach(([k,ms])=>{
-    const c=k==='x'?COL.x:k==='y'?COL.y:COL.z;
-    ms.forEach(m=>m.material.color.set(key===k?COL.hi:c));
+
+function setHL(key) {
+  if (!gizmo) return;
+  Object.entries(gizmo.userData.hMesh).forEach(([k,ms]) => {
+    const c = k==='x'?COL.x : k==='y'?COL.y : COL.z;
+    ms.forEach(m => m.material.color.set(key===k ? COL.hi : c));
   });
 }
-function clearHL(){ setHL('__'); }
+function clearHL() { setHL('__'); }
 
 // ── Cursor ────────────────────────────────────────────────────────────────────
-const curEl=document.getElementById('cur');
-let cx=innerWidth/2, cy=innerHeight/2;
-curEl.style.left=cx+'px'; curEl.style.top=cy+'px';
+const curEl = document.getElementById('cur');
+let cx = innerWidth/2, cy = innerHeight/2;
+curEl.style.left = cx+'px'; curEl.style.top = cy+'px';
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
-const modeEl=document.getElementById('modeEl'), ltEl=document.getElementById('ltEl');
-const rand=(a,b)=>a+Math.random()*(b-a);
-const eio=t=>t<.5?2*t*t:-1+(4-2*t)*t;
-const wait=ms=>new Promise(r=>setTimeout(r,ms));
-const w2s=v3=>{const v=v3.clone().project(camera);return{x:(v.x*.5+.5)*innerWidth,y:(-v.y*.5+.5)*innerHeight};};
+const modeEl = document.getElementById('modeEl'), ltEl = document.getElementById('ltEl');
+const rand  = (a,b) => a + Math.random()*(b-a);
+const eio   = t => t<.5 ? 2*t*t : -1+(4-2*t)*t;
+const wait  = ms => new Promise(r => setTimeout(r,ms));
+const w2s   = v3 => { const v=v3.clone().project(camera); return {x:(v.x*.5+.5)*innerWidth, y:(-v.y*.5+.5)*innerHeight}; };
 
-function moveCursor(tx,ty,dur){
-  return new Promise(res=>{
-    const sx=cx,sy=cy,d=Math.hypot(tx-sx,ty-sy);
-    const c1x=sx+(tx-sx)*.3+rand(-1,1)*d*.2, c1y=sy+(ty-sy)*.3+rand(-1,1)*d*.2;
-    const c2x=sx+(tx-sx)*.7+rand(-1,1)*d*.12,c2y=sy+(ty-sy)*.7+rand(-1,1)*d*.12;
-    const t0=performance.now();
-    (function tick(){
-      const t=Math.min((performance.now()-t0)/(dur*1000),1),e=eio(t),m=1-e;
-      cx=m*m*m*sx+3*m*m*e*c1x+3*m*e*e*c2x+e*e*e*tx+(1-t)*rand(-1.5,1.5);
-      cy=m*m*m*sy+3*m*m*e*c1y+3*m*e*e*c2y+e*e*e*ty+(1-t)*rand(-1.5,1.5);
-      curEl.style.left=cx+'px'; curEl.style.top=cy+'px';
-      t<1?requestAnimationFrame(tick):res();
+// Smooth bezier cursor move with hand-tremor jitter
+function moveCursor(tx, ty, dur) {
+  return new Promise(res => {
+    const sx=cx, sy=cy, d=Math.hypot(tx-sx,ty-sy);
+    const c1x=sx+(tx-sx)*.3+rand(-1,1)*d*.22, c1y=sy+(ty-sy)*.3+rand(-1,1)*d*.22;
+    const c2x=sx+(tx-sx)*.7+rand(-1,1)*d*.13, c2y=sy+(ty-sy)*.7+rand(-1,1)*d*.13;
+    const t0 = performance.now();
+    (function tick() {
+      const t=Math.min((performance.now()-t0)/(dur*1000),1), e=eio(t), m=1-e;
+      const jitter = (1-t)*1.8; // tremor fades as cursor settles
+      cx = m*m*m*sx + 3*m*m*e*c1x + 3*m*e*e*c2x + e*e*e*tx + rand(-jitter,jitter);
+      cy = m*m*m*sy + 3*m*m*e*c1y + 3*m*e*e*c2y + e*e*e*ty + rand(-jitter,jitter);
+      curEl.style.left = cx+'px'; curEl.style.top = cy+'px';
+      t<1 ? requestAnimationFrame(tick) : res();
     })();
   });
 }
 
-function animLetter(L,toPos,toRot,toScale,dur){
-  return new Promise(res=>{
-    const fp=L.cur.pos.clone(),fq=new THREE.Quaternion().setFromEuler(L.cur.rot);
-    const tq=new THREE.Quaternion().setFromEuler(toRot),fs=L.cur.scale.clone();
-    const t0=performance.now();
-    (function tick(){
-      const t=Math.min((performance.now()-t0)/(dur*1000),1),e=eio(t);
-      L.mesh.position.lerpVectors(fp,toPos,e);
-      L.mesh.quaternion.slerpQuaternions(fq,tq,e);
-      L.mesh.scale.lerpVectors(fs,toScale,e);
+// Animate a letter while keeping cursor locked to the active gizmo handle
+function animLetter(L, toPos, toRot, toScale, dur, activeAxis, gizmoType) {
+  return new Promise(res => {
+    const fp = L.cur.pos.clone();
+    const fq = new THREE.Quaternion().setFromEuler(L.cur.rot);
+    const tq = new THREE.Quaternion().setFromEuler(toRot);
+    const fs = L.cur.scale.clone();
+    const t0 = performance.now();
+
+    // For rotate: pre-compute orbit params so cursor arcs around the ring
+    let orbitCenter=null, orbitR=0, orbitAngle0=0, orbitDelta=0;
+    if (gizmoType === 'rotate' && activeAxis) {
+      const sc = w2s(L.cur.pos);
+      const hs0 = handleScreen(activeAxis);
+      if (hs0) {
+        orbitCenter = sc;
+        orbitR = Math.hypot(hs0.x-sc.x, hs0.y-sc.y);
+        orbitAngle0 = Math.atan2(hs0.y-sc.y, hs0.x-sc.x);
+        // Total angle to sweep = whichever rotation component changed most
+        const dr = { x: toRot.x-L.cur.rot.x, y: toRot.y-L.cur.rot.y, z: toRot.z-L.cur.rot.z };
+        orbitDelta = activeAxis==='x' ? dr.x : activeAxis==='y' ? dr.y : dr.z;
+      }
+    }
+
+    (function tick() {
+      const t  = Math.min((performance.now()-t0)/(dur*1000), 1);
+      const e  = eio(t);
+      L.mesh.position.lerpVectors(fp, toPos, e);
+      L.mesh.quaternion.slerpQuaternions(fq, tq, e);
+      L.mesh.scale.lerpVectors(fs, toScale, e);
       moveGizmo(L.mesh.position);
-      if(t<1){
-        const sp=w2s(L.mesh.position);
-        cx+=(sp.x-cx)*.07; cy+=(sp.y-cy)*.07;
-        curEl.style.left=cx+'px'; curEl.style.top=cy+'px';
+
+      // Cursor tracks the handle precisely
+      if (activeAxis) {
+        if (gizmoType === 'rotate' && orbitCenter) {
+          // Arc cursor around the ring as letter rotates
+          const angle = orbitAngle0 + orbitDelta * e;
+          cx = orbitCenter.x + Math.cos(angle)*orbitR + rand(-.5,.5);
+          cy = orbitCenter.y + Math.sin(angle)*orbitR + rand(-.5,.5);
+        } else {
+          // Translate / scale: cursor stays on the moving handle
+          const hs = handleScreen(activeAxis);
+          if (hs) { cx = hs.x + rand(-.6,.6); cy = hs.y + rand(-.6,.6); }
+        }
+        curEl.style.left = cx+'px'; curEl.style.top = cy+'px';
+      }
+
+      if (t < 1) {
         requestAnimationFrame(tick);
       } else {
-        L.cur.pos.copy(toPos); L.cur.rot.copy(toRot); L.cur.scale.copy(toScale); res();
+        L.cur.pos.copy(toPos); L.cur.rot.copy(toRot); L.cur.scale.copy(toScale);
+        res();
       }
     })();
   });
 }
 
 // ── Sequence ──────────────────────────────────────────────────────────────────
-async function runSequence(){
-  const TYPES=['translate','rotate','scale'], AXES=['x','y','z'];
-  while(true){
-    const count=Math.floor(rand(3,6));
-    const idxs=[...Array(letters.length).keys()].sort(()=>Math.random()-.5).slice(0,count);
-    for(const idx of idxs){
-      const L=letters[idx];
-      ltEl.textContent=L.ch.toUpperCase();
-      const sp0=w2s(L.cur.pos);
-      await moveCursor(sp0.x+rand(-12,12),sp0.y+rand(-12,12),rand(.5,1.0));
+async function runSequence() {
+  const TYPES = ['translate','rotate','scale'];
+  const AXES  = ['x','y','z'];
+
+  while (true) {
+    const count = Math.floor(rand(3,6));
+    const idxs  = [...Array(letters.length).keys()].sort(()=>Math.random()-.5).slice(0,count);
+
+    for (const idx of idxs) {
+      const L = letters[idx];
+      ltEl.textContent = L.ch.toUpperCase();
+
+      // Move cursor to letter
+      const sp0 = w2s(L.cur.pos);
+      await moveCursor(sp0.x + rand(-14,14), sp0.y + rand(-10,10), rand(.5,1.1));
       await wait(rand(60,140));
-      // click flash – brighten emissive on all materials
-      L.mesh.material.forEach?.(m=>{ if(m.emissive) m.emissive.setScalar(.8); });
-      await wait(70);
-      L.mesh.material.forEach?.(m=>{ if(m.emissive) m.emissive.setScalar(0); });
-      await wait(90);
-      const type=TYPES[Math.floor(Math.random()*TYPES.length)];
-      modeEl.textContent=type[0].toUpperCase()+type.slice(1);
-      showGizmo(type,L.cur.pos.clone()); await wait(130);
-      const axis=AXES[Math.floor(Math.random()*AXES.length)];
-      const hs=handleScreen(axis);
-      if(hs){ await moveCursor(hs.x+rand(-5,5),hs.y+rand(-5,5),rand(.3,.65)); await wait(rand(55,110)); setHL(axis); await wait(80); }
-      const toPos=L.cur.pos.clone();
-      const toRot=new THREE.Euler(L.cur.rot.x,L.cur.rot.y,L.cur.rot.z);
-      const toScale=L.cur.scale.clone();
-      if(type==='translate'){ toPos.x+=rand(-3.5,3.5); toPos.y+=rand(-1.5,2.5); toPos.z+=rand(-4,4); }
-      else if(type==='rotate'){ toRot.x+=rand(-Math.PI,Math.PI); toRot.y+=rand(-Math.PI,Math.PI); toRot.z+=rand(-.7,.7); }
-      else { const s=rand(.45,2.3); toScale.set(s,s,s); }
-      await animLetter(L,toPos,toRot,toScale,rand(.75,1.6));
-      clearHL(); await wait(rand(150,380));
+
+      // Click flash
+      L.mesh.material.emissive && L.mesh.material.emissive.setScalar(.7);
+      await wait(65);
+      L.mesh.material.emissive && L.mesh.material.emissive.setScalar(0);
+      await wait(85);
+
+      // Pick transform type and show gizmo
+      const type = TYPES[Math.floor(Math.random()*TYPES.length)];
+      modeEl.textContent = type[0].toUpperCase() + type.slice(1);
+      showGizmo(type, L.cur.pos.clone());
+      await wait(120);
+
+      // Move cursor precisely to a handle
+      const axis = AXES[Math.floor(Math.random()*AXES.length)];
+      const hs   = handleScreen(axis);
+      if (hs) {
+        await moveCursor(hs.x + rand(-3,3), hs.y + rand(-3,3), rand(.3,.65));
+        await wait(rand(50,100));
+        setHL(axis);
+        await wait(70);
+      }
+
+      // Compute target transform
+      const toPos   = L.cur.pos.clone();
+      const toRot   = new THREE.Euler(L.cur.rot.x, L.cur.rot.y, L.cur.rot.z);
+      const toScale = L.cur.scale.clone();
+      if (type === 'translate') {
+        toPos.x += rand(-3.5,3.5); toPos.y += rand(-1.2,2.2); toPos.z += rand(-3.5,3.5);
+      } else if (type === 'rotate') {
+        toRot.x += rand(-Math.PI, Math.PI);
+        toRot.y += rand(-Math.PI, Math.PI);
+        toRot.z += rand(-.6,.6);
+      } else {
+        const s = rand(.45,2.2); toScale.set(s,s,s);
+      }
+
+      await animLetter(L, toPos, toRot, toScale, rand(.8,1.7), axis, type);
+      clearHL();
+      await wait(rand(140,360));
     }
-    modeEl.textContent='Reset'; ltEl.textContent='—';
-    for(const idx of idxs){
-      const L=letters[idx];
-      hideGizmo(); showGizmo('translate',L.cur.pos.clone());
-      const sp=w2s(L.cur.pos);
-      await moveCursor(sp.x+rand(-8,8),sp.y+rand(-8,8),rand(.3,.6));
-      await animLetter(L,L.home.pos.clone(),new THREE.Euler(),new THREE.Vector3(1,1,1),rand(.55,1.0));
-      hideGizmo(); await wait(rand(55,150));
+
+    // Reset phase
+    modeEl.textContent = 'Reset'; ltEl.textContent = '—';
+    for (const idx of idxs) {
+      const L = letters[idx];
+      hideGizmo();
+      showGizmo('translate', L.cur.pos.clone());
+      const sp = w2s(L.cur.pos);
+      await moveCursor(sp.x + rand(-8,8), sp.y + rand(-8,8), rand(.3,.6));
+      await animLetter(L, L.home.pos.clone(), new THREE.Euler(), new THREE.Vector3(1,1,1), rand(.5,.95), 'x', 'translate');
+      hideGizmo();
+      await wait(rand(50,130));
     }
     await wait(rand(500,1100));
   }
 }
 
 // ── Render loop ───────────────────────────────────────────────────────────────
-const clock=new THREE.Clock();
-(function render(){
+const clock = new THREE.Clock();
+(function render() {
   requestAnimationFrame(render);
-  const t=clock.getElapsedTime();
-  camera.position.x=Math.sin(t*.11)*2.8;
-  camera.position.y=3.5+Math.sin(t*.08)*.8;
-  camera.lookAt(0,.5,0);
+  const t = clock.getElapsedTime();
+  camera.position.x = Math.sin(t*.11)*2.6;
+  camera.position.y = 2.5 + Math.sin(t*.08)*.7;
+  camera.lookAt(0, .5, 0);
   renderer.clear();
-  renderer.render(scene,camera);
+  renderer.render(scene, camera);
   renderer.clearDepth();
-  renderer.render(gScene,camera);
+  renderer.render(gScene, camera);
 })();
 
 setTimeout(runSequence, 400);
 
-window.addEventListener('resize',()=>{
-  camera.aspect=innerWidth/innerHeight;
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth,innerHeight);
+  renderer.setSize(innerWidth, innerHeight);
 });
 </script>
 </body>
