@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Find My Friends — Visualizer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-0: #0d0d1a;
+      --bg-1: #13132a;
+      --bg-2: #1a1a3a;
+      --border: #2a2a50;
+      --accent: #e84393;
+      --accent2: #7c5cfc;
+      --text: #d4d8f0;
+      --text-dim: #6b6d90;
+      --text-bright: #f0f2ff;
+    }
+
+    html, body { height: 100%; overflow: hidden; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-0);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    #header {
+      background: var(--bg-2);
+      border-bottom: 1px solid var(--border);
+      padding: 0 16px;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+      z-index: 100;
+    }
+
+    #header h1 {
+      font-size: 15px;
+      font-weight: 700;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      flex: 1;
+    }
+
+    .btn {
+      background: var(--bg-1);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 5px 13px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+      white-space: nowrap;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .btn:hover { background: var(--bg-2); border-color: #4a4a80; }
+
+    .btn.accent {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-color: transparent;
+      color: #fff;
+      font-weight: 600;
+    }
+    .btn.accent:hover { opacity: 0.88; }
+
+    /* ── Main ── */
+    #main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 240px;
+      background: var(--bg-1);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .sidebar-section-head {
+      padding: 10px 14px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    #friend-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px;
+    }
+    #friend-list::-webkit-scrollbar { width: 3px; }
+    #friend-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .friend-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      margin-bottom: 1px;
+      transition: background 0.12s;
+    }
+    .friend-item:hover { background: rgba(255,255,255,0.04); }
+
+    .friend-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 800;
+      color: #fff;
+      flex-shrink: 0;
+      cursor: pointer;
+      border: 2px solid rgba(255,255,255,0.15);
+      transition: transform 0.15s;
+    }
+    .friend-avatar:hover { transform: scale(1.1); }
+
+    .friend-info { flex: 1; min-width: 0; cursor: pointer; }
+    .friend-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-bright);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .friend-status {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .friend-check {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      flex-shrink: 0;
+      accent-color: var(--accent);
+    }
+
+    /* ── Map ── */
+    #map-wrap { position: relative; flex: 1; }
+    #map { width: 100%; height: 100%; }
+
+    #empty-hint {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      z-index: 500;
+    }
+    #empty-hint-inner {
+      background: rgba(13,13,26,0.85);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 22px;
+      font-size: 13px;
+      color: var(--text-dim);
+      text-align: center;
+      backdrop-filter: blur(6px);
+    }
+
+    /* ── Timeline ── */
+    #timeline {
+      background: var(--bg-2);
+      border-top: 1px solid var(--border);
+      padding: 10px 16px 12px;
+      flex-shrink: 0;
+    }
+
+    #tl-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    #play-btn {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border: none;
+      color: #fff;
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    #play-btn:hover { opacity: 0.85; }
+
+    #time-display {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-bright);
+      min-width: 200px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #speed-group {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-left: auto;
+    }
+    #speed-group span {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-right: 2px;
+    }
+    .spd {
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.1s, color 0.1s;
+    }
+    .spd.on { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+
+    #trail-group {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    #trail-group span { font-size: 10px; color: var(--text-dim); }
+    .trl {
+      background: var(--bg-1);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.1s, color 0.1s;
+    }
+    .trl.on { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+
+    #tl-slider-wrap { position: relative; }
+
+    #time-slider {
+      width: 100%;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 5px;
+      border-radius: 3px;
+      background: var(--border);
+      outline: none;
+      cursor: pointer;
+    }
+    #time-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 15px; height: 15px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      cursor: pointer;
+      border: 2px solid rgba(255,255,255,0.25);
+    }
+    #time-slider::-moz-range-thumb {
+      width: 15px; height: 15px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      cursor: pointer;
+      border: 2px solid rgba(255,255,255,0.25);
+    }
+
+    #tl-labels {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 4px;
+      font-size: 10px;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Welcome modal ── */
+    #modal-bg {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      backdrop-filter: blur(5px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+
+    #modal {
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px 28px 24px;
+      max-width: 500px;
+      width: 92%;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    #modal h2 {
+      font-size: 18px;
+      margin-bottom: 10px;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    #modal p {
+      font-size: 12.5px;
+      color: var(--text-dim);
+      line-height: 1.65;
+      margin-bottom: 14px;
+    }
+    #modal h3 {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+    #modal pre {
+      background: var(--bg-0);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 12px 14px;
+      font-size: 11px;
+      color: #7ec8e3;
+      overflow-x: auto;
+      line-height: 1.55;
+      margin-bottom: 18px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* ── Leaflet overrides ── */
+    .leaflet-popup-content-wrapper {
+      background: var(--bg-2) !important;
+      color: var(--text) !important;
+      border: 1px solid var(--border) !important;
+      border-radius: 9px !important;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.6) !important;
+    }
+    .leaflet-popup-tip { background: var(--bg-2) !important; }
+    .leaflet-popup-content { margin: 11px 14px !important; }
+    .leaflet-control-zoom a {
+      background: var(--bg-2) !important;
+      color: var(--text) !important;
+      border-color: var(--border) !important;
+    }
+    .leaflet-control-zoom a:hover { background: var(--bg-1) !important; }
+    .leaflet-control-attribution {
+      background: rgba(13,13,26,0.75) !important;
+      color: var(--text-dim) !important;
+      font-size: 9px !important;
+    }
+    .leaflet-control-attribution a { color: #7ec8e3 !important; }
+
+    .popup-name { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+    .popup-time { font-size: 11px; color: var(--text-dim); margin-bottom: 3px; }
+    .popup-coords { font-size: 10px; color: var(--text-dim); font-family: monospace; }
+    .popup-note { font-size: 11px; margin-top: 5px; color: var(--text); font-style: italic; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1>Find My Friends — Visualizer</h1>
+  <button class="btn" onclick="triggerUpload()">Upload JSON</button>
+  <button class="btn accent" onclick="loadSample(); closeModal()">Sample Data</button>
+  <input type="file" id="file-in" accept=".json" style="display:none" />
+</div>
+
+<div id="main">
+  <div id="sidebar">
+    <div class="sidebar-section-head">Friends</div>
+    <div id="friend-list">
+      <div style="padding:20px 10px; text-align:center; font-size:11px; color:var(--text-dim);">
+        Load data to see friends
+      </div>
+    </div>
+  </div>
+
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="empty-hint">
+      <div id="empty-hint-inner">
+        Load a JSON file or try the Sample Data to begin
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="timeline">
+  <div id="tl-top">
+    <button id="play-btn" onclick="togglePlay()" title="Play / Pause">▶</button>
+    <div id="time-display">—</div>
+
+    <div id="trail-group">
+      <span>Trail:</span>
+      <button class="trl" data-h="0">All</button>
+      <button class="trl on" data-h="3">3 h</button>
+      <button class="trl" data-h="1">1 h</button>
+    </div>
+
+    <div id="speed-group">
+      <span>Speed:</span>
+      <button class="spd" data-s="5">5×</button>
+      <button class="spd on" data-s="30">30×</button>
+      <button class="spd" data-s="120">2 h/s</button>
+      <button class="spd" data-s="720">12 h/s</button>
+    </div>
+  </div>
+
+  <div id="tl-slider-wrap">
+    <input type="range" id="time-slider" min="0" max="10000" value="0" />
+  </div>
+  <div id="tl-labels">
+    <span id="lbl-start">—</span>
+    <span id="lbl-end">—</span>
+  </div>
+</div>
+
+<!-- Welcome modal -->
+<div id="modal-bg">
+  <div id="modal">
+    <h2>Friend Location Visualizer</h2>
+    <p>
+      Visualize where your friends were and when — scrub through time, watch their
+      paths animate, and filter by person. Load your own JSON export or try the
+      built-in sample data.
+    </p>
+
+    <h3>Expected JSON format</h3>
+    <pre>{
+  "friends": [
+    {
+      "name": "Alice",
+      "color": "#ff6b6b",          <span style="color:#6b6d90">// optional</span>
+      "locations": [
+        {
+          "time": "2024-06-15T09:00:00Z", <span style="color:#6b6d90">// ISO 8601 or Unix ms</span>
+          "lat": 37.7749,
+          "lng": -122.4194,
+          "note": "Coffee shop"     <span style="color:#6b6d90">// optional</span>
+        }
+      ]
+    }
+  ]
+}</pre>
+
+    <p>
+      Also accepts a flat array format where each entry has
+      <code style="color:#7ec8e3">name</code>, <code style="color:#7ec8e3">latitude</code>,
+      <code style="color:#7ec8e3">longitude</code>, and
+      <code style="color:#7ec8e3">timestamp</code> fields.
+    </p>
+
+    <div class="modal-actions">
+      <button class="btn accent" onclick="loadSample(); closeModal()">Try Sample Data</button>
+      <button class="btn" onclick="triggerUpload(); closeModal()">Upload JSON</button>
+      <button class="btn" onclick="closeModal()">Dismiss</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ─────────────────────────────────────────────
+//  Constants
+// ─────────────────────────────────────────────
+const PALETTE = [
+  '#e84393','#7c5cfc','#00c2ff','#00e5a0','#ffb700',
+  '#ff5757','#3dd9eb','#a8ff78','#f5af19','#c471ed'
+];
+
+const SLIDER_STEPS = 10000;
+
+// ─────────────────────────────────────────────
+//  State
+// ─────────────────────────────────────────────
+let map;
+let friends   = [];   // normalized friend objects
+let layers    = {};   // name → { marker, trail }
+let timeMin   = null;
+let timeMax   = null;
+let curTime   = 0;
+let playing   = false;
+let playSpeed = 30;   // minutes of data per real second
+let trailHours = 3;   // 0 = unlimited
+let lastReal  = null;
+let raf       = null;
+
+// ─────────────────────────────────────────────
+//  Map init
+// ─────────────────────────────────────────────
+function initMap() {
+  map = L.map('map', { center: [37.77, -122.42], zoom: 12 });
+  L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 20
+    }
+  ).addTo(map);
+}
+
+// ─────────────────────────────────────────────
+//  Data normalisation  (supports 3 formats)
+// ─────────────────────────────────────────────
+function parseTime(v) {
+  if (!v && v !== 0) return null;
+  if (typeof v === 'number') return v > 1e11 ? v : v * 1000;
+  const n = Number(v);
+  if (!isNaN(n))  return n > 1e11 ? n : n * 1000;
+  const d = new Date(v);
+  return isNaN(d) ? null : d.getTime();
+}
+
+function normLoc(raw) {
+  const t   = parseTime(raw.time ?? raw.timestamp ?? raw.ts);
+  const lat = raw.lat ?? raw.latitude;
+  const lng = raw.lng ?? raw.lon ?? raw.longitude;
+  if (!t || lat == null || lng == null) return null;
+  return { t, lat: +lat, lng: +lng, note: raw.note ?? raw.address ?? '' };
+}
+
+function normalise(data) {
+  let raw = [];
+
+  if (data.friends && Array.isArray(data.friends)) {
+    // Format A: { friends: [{ name, color?, locations: [...] }] }
+    raw = data.friends.map((f, i) => ({
+      name:      f.name   ?? `Friend ${i + 1}`,
+      color:     f.color  ?? PALETTE[i % PALETTE.length],
+      locations: (f.locations ?? []).map(normLoc).filter(Boolean)
+    }));
+  } else if ((data.persons ?? data.people) && Array.isArray(data.persons ?? data.people)) {
+    // Format B: Apple-like { persons: [{ fullName, locations: [...] }] }
+    const arr = data.persons ?? data.people;
+    raw = arr.map((p, i) => ({
+      name:      p.fullName ?? p.name ?? `Friend ${i + 1}`,
+      color:     PALETTE[i % PALETTE.length],
+      locations: (p.locations ?? p.history ?? []).map(normLoc).filter(Boolean)
+    }));
+  } else if (Array.isArray(data)) {
+    // Format C: flat array [{ name, timestamp, latitude, longitude }]
+    const byName = {};
+    data.forEach(entry => {
+      const name = entry.name ?? entry.fullName ?? 'Unknown';
+      if (!byName[name]) byName[name] = [];
+      const loc = normLoc(entry);
+      if (loc) byName[name].push(loc);
+    });
+    raw = Object.entries(byName).map(([name, locations], i) => ({
+      name, color: PALETTE[i % PALETTE.length], locations
+    }));
+  }
+
+  return raw
+    .map(f => ({ ...f, visible: true, locations: f.locations.sort((a, b) => a.t - b.t) }))
+    .filter(f => f.locations.length > 0);
+}
+
+// ─────────────────────────────────────────────
+//  Load data
+// ─────────────────────────────────────────────
+function loadData(data) {
+  // Clear old layers
+  Object.values(layers).forEach(({ marker, trail }) => {
+    if (map.hasLayer(marker)) map.removeLayer(marker);
+    map.removeLayer(trail);
+  });
+  layers = {};
+
+  friends = normalise(data);
+  if (!friends.length) { alert('No valid location data found.'); return; }
+
+  const allT = friends.flatMap(f => f.locations.map(l => l.t));
+  timeMin = Math.min(...allT);
+  timeMax = Math.max(...allT);
+  curTime = timeMin;
+
+  // Create Leaflet layers per friend
+  friends.forEach(f => {
+    const trail = L.polyline([], {
+      color: f.color, weight: 2.5, opacity: 0.75, smoothFactor: 1.5
+    }).addTo(map);
+
+    const marker = L.marker([0, 0], { icon: makeIcon(f.name, f.color) });
+
+    layers[f.name] = { marker, trail };
+  });
+
+  renderSidebar();
+  updateTimeLabels();
+
+  const bounds = L.latLngBounds(friends.flatMap(f => f.locations.map(l => [l.lat, l.lng])));
+  map.fitBounds(bounds, { padding: [50, 50] });
+
+  document.getElementById('time-slider').value = 0;
+  document.getElementById('empty-hint').style.display = 'none';
+
+  renderAt(curTime);
+}
+
+// ─────────────────────────────────────────────
+//  Custom marker icon
+// ─────────────────────────────────────────────
+function makeIcon(name, color) {
+  const letter = (name[0] ?? '?').toUpperCase();
+  return L.divIcon({
+    className: '',
+    html: `<div style="
+      width:34px;height:34px;border-radius:50%;
+      background:${color};
+      border:2.5px solid rgba(255,255,255,0.35);
+      display:flex;align-items:center;justify-content:center;
+      font-weight:800;font-size:14px;color:#fff;
+      box-shadow:0 3px 10px rgba(0,0,0,0.6);
+      font-family:-apple-system,sans-serif;
+    ">${letter}</div>`,
+    iconSize:   [34, 34],
+    iconAnchor: [17, 17],
+    popupAnchor:[0, -19]
+  });
+}
+
+// ─────────────────────────────────────────────
+//  Sidebar
+// ─────────────────────────────────────────────
+function renderSidebar() {
+  const list = document.getElementById('friend-list');
+  list.innerHTML = '';
+  friends.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'friend-item';
+    div.id = `fi-${CSS.escape(f.name)}`;
+    div.innerHTML = `
+      <div class="friend-avatar" style="background:${f.color}" data-name="${f.name}">${f.name[0].toUpperCase()}</div>
+      <div class="friend-info" data-name="${f.name}">
+        <div class="friend-name">${f.name}</div>
+        <div class="friend-status" id="fs-${CSS.escape(f.name)}">—</div>
+      </div>
+      <input type="checkbox" class="friend-check" checked data-name="${f.name}" />
+    `;
+    div.querySelector('.friend-avatar').addEventListener('click', () => focusFriend(f.name));
+    div.querySelector('.friend-info').addEventListener('click',  () => focusFriend(f.name));
+    div.querySelector('.friend-check').addEventListener('change', e => {
+      f.visible = e.target.checked;
+      renderAt(curTime);
+    });
+    list.appendChild(div);
+  });
+}
+
+function focusFriend(name) {
+  const lyr = layers[name];
+  if (lyr && map.hasLayer(lyr.marker)) {
+    map.setView(lyr.marker.getLatLng(), Math.max(map.getZoom(), 14));
+    lyr.marker.openPopup();
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Interpolation helpers
+// ─────────────────────────────────────────────
+function interpolate(f, t) {
+  const locs = f.locations;
+  if (!locs.length || t < locs[0].t) return null;
+  if (t >= locs[locs.length - 1].t) return locs[locs.length - 1];
+
+  let lo = 0, hi = locs.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (locs[mid].t <= t) lo = mid; else hi = mid;
+  }
+  const a = locs[lo], b = locs[hi];
+  const p = (t - a.t) / (b.t - a.t);
+  return { t, lat: a.lat + (b.lat - a.lat) * p, lng: a.lng + (b.lng - a.lng) * p, note: a.note };
+}
+
+function trailPoints(f, t) {
+  const cutoff = trailHours > 0 ? t - trailHours * 3600000 : -Infinity;
+  const pts = f.locations
+    .filter(l => l.t <= t && l.t >= cutoff)
+    .map(l => [l.lat, l.lng]);
+
+  const interp = interpolate(f, t);
+  if (interp) {
+    const last = pts[pts.length - 1];
+    if (!last || last[0] !== interp.lat || last[1] !== interp.lng)
+      pts.push([interp.lat, interp.lng]);
+  }
+  return pts;
+}
+
+// ─────────────────────────────────────────────
+//  Render at time t
+// ─────────────────────────────────────────────
+function renderAt(t) {
+  curTime = t;
+
+  const sliderVal = (timeMax > timeMin)
+    ? Math.round((t - timeMin) / (timeMax - timeMin) * SLIDER_STEPS)
+    : 0;
+  document.getElementById('time-slider').value = sliderVal;
+  document.getElementById('time-display').textContent = fmtFull(t);
+
+  friends.forEach(f => {
+    const lyr  = layers[f.name];
+    if (!lyr) return;
+    const loc  = interpolate(f, t);
+    const stat = document.getElementById(`fs-${CSS.escape(f.name)}`);
+
+    if (!f.visible || !loc) {
+      if (map.hasLayer(lyr.marker)) map.removeLayer(lyr.marker);
+      lyr.trail.setLatLngs([]);
+      if (stat) stat.textContent = loc ? '(hidden)' : 'No data yet';
+      return;
+    }
+
+    lyr.marker.setLatLng([loc.lat, loc.lng]);
+    if (!map.hasLayer(lyr.marker)) lyr.marker.addTo(map);
+
+    lyr.marker.bindPopup(`
+      <div class="popup-name" style="color:${f.color}">${f.name}</div>
+      <div class="popup-time">${fmtFull(loc.t)}</div>
+      <div class="popup-coords">${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}</div>
+      ${loc.note ? `<div class="popup-note">${loc.note}</div>` : ''}
+    `);
+
+    lyr.trail.setLatLngs(trailPoints(f, t));
+    if (stat) stat.textContent = fmtTime(loc.t);
+  });
+}
+
+// ─────────────────────────────────────────────
+//  Timeline controls
+// ─────────────────────────────────────────────
+document.getElementById('time-slider').addEventListener('input', e => {
+  if (timeMin == null) return;
+  const t = timeMin + (e.target.value / SLIDER_STEPS) * (timeMax - timeMin);
+  renderAt(t);
+});
+
+function togglePlay() {
+  if (timeMin == null) return;
+  playing = !playing;
+  document.getElementById('play-btn').textContent = playing ? '⏸' : '▶';
+  if (playing) {
+    if (curTime >= timeMax) curTime = timeMin;
+    lastReal = performance.now();
+    tick();
+  } else {
+    cancelAnimationFrame(raf);
+  }
+}
+
+function tick() {
+  const now = performance.now();
+  const dt  = (now - lastReal) / 1000;   // real seconds
+  lastReal  = now;
+  curTime  += dt * playSpeed * 60000;    // data milliseconds
+
+  if (curTime >= timeMax) {
+    curTime = timeMax;
+    renderAt(curTime);
+    playing = false;
+    document.getElementById('play-btn').textContent = '▶';
+    return;
+  }
+  renderAt(curTime);
+  raf = requestAnimationFrame(tick);
+}
+
+// Speed buttons
+document.querySelectorAll('.spd').forEach(btn => {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('.spd').forEach(b => b.classList.remove('on'));
+    this.classList.add('on');
+    playSpeed = +this.dataset.s;
+  });
+});
+
+// Trail buttons
+document.querySelectorAll('.trl').forEach(btn => {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('.trl').forEach(b => b.classList.remove('on'));
+    this.classList.add('on');
+    trailHours = +this.dataset.h;
+    if (timeMin != null) renderAt(curTime);
+  });
+});
+
+// ─────────────────────────────────────────────
+//  Time formatting
+// ─────────────────────────────────────────────
+function fmtFull(ms) {
+  if (!ms) return '—';
+  return new Date(ms).toLocaleString('en-US', {
+    month:'short', day:'numeric', year:'numeric',
+    hour:'2-digit', minute:'2-digit'
+  });
+}
+function fmtTime(ms) {
+  if (!ms) return '—';
+  return new Date(ms).toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
+}
+
+function updateTimeLabels() {
+  document.getElementById('lbl-start').textContent = timeMin ? fmtFull(timeMin) : '—';
+  document.getElementById('lbl-end').textContent   = timeMax ? fmtFull(timeMax) : '—';
+}
+
+// ─────────────────────────────────────────────
+//  File upload
+// ─────────────────────────────────────────────
+function triggerUpload() { document.getElementById('file-in').click(); }
+
+document.getElementById('file-in').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try { loadData(JSON.parse(ev.target.result)); }
+    catch (err) { alert('Could not parse JSON:\n' + err.message); }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
+
+// ─────────────────────────────────────────────
+//  Modal
+// ─────────────────────────────────────────────
+function closeModal() { document.getElementById('modal-bg').style.display = 'none'; }
+
+// ─────────────────────────────────────────────
+//  Sample data  (5 friends, San Francisco, 16 h)
+// ─────────────────────────────────────────────
+function loadSample() {
+  const SEED = [
+    { name:'Alice',   color:'#e84393', lat:37.7749, lng:-122.4194 },
+    { name:'Bob',     color:'#7c5cfc', lat:37.7850, lng:-122.4100 },
+    { name:'Carol',   color:'#00c2ff', lat:37.7680, lng:-122.4300 },
+    { name:'Dave',    color:'#ffb700', lat:37.7800, lng:-122.4380 },
+    { name:'Priya',   color:'#00e5a0', lat:37.7710, lng:-122.4050 },
+  ];
+
+  const NOTES = [
+    'Coffee shop','Home','Office','Lunch spot','Park','Shopping',
+    'Gym','Library','Friend\'s place','Restaurant',''
+  ];
+
+  const START = new Date('2024-07-20T07:00:00Z').getTime();
+  const STEP  = 32 * 60 * 1000;  // 32 minutes
+  const COUNT = 30;
+
+  // Seeded pseudo-random for reproducibility
+  let seed = 42;
+  const rng = () => { seed = (seed * 1664525 + 1013904223) & 0xffffffff; return (seed >>> 0) / 0xffffffff; };
+
+  const friends = SEED.map(s => {
+    let lat = s.lat, lng = s.lng;
+    const locations = [];
+    for (let i = 0; i < COUNT; i++) {
+      lat += (rng() - 0.48) * 0.018;
+      lng += (rng() - 0.48) * 0.018;
+      locations.push({
+        time: new Date(START + i * STEP).toISOString(),
+        lat: Math.round(lat * 1e6) / 1e6,
+        lng: Math.round(lng * 1e6) / 1e6,
+        note: i % 4 === 0 ? NOTES[Math.floor(rng() * NOTES.length)] : ''
+      });
+    }
+    return { name: s.name, color: s.color, locations };
+  });
+
+  loadData({ friends });
+}
+
+// ─────────────────────────────────────────────
+//  Boot
+// ─────────────────────────────────────────────
+initMap();
+</script>
+</body>
+</html>
