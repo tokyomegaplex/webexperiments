@@ -1,0 +1,15 @@
+[package]
+name = "cartoon-holdem-bevy"
+version = "0.1.0"
+edition = "2021"
+description = "Cartoon Texas Hold'em — Bevy 3D version (native desktop)."
+
+[dependencies]
+bevy = "0.18"
+
+# Faster incremental builds while keeping deps optimized.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
