@@ -8,6 +8,8 @@
 
 use bevy::prelude::*;
 
+// `id`, `profile`, and `blurb` are consumed by the phase-2 engine/AI port.
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct CharDef {
     pub id: &'static str,

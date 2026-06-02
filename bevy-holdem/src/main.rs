@@ -22,7 +22,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Cartoon Hold'em (Bevy)".into(),
-                resolution: (1100.0, 760.0).into(),
+                resolution: [1100u32, 760].into(),
                 ..default()
             }),
             ..default()
@@ -40,9 +40,15 @@ fn setup(
     asset_server: Res<AssetServer>,
 ) {
     // --- camera: looking down at the felt from the player's side ---
+    // (AmbientLight is a per-camera component in Bevy 0.18, not a resource.)
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(0.0, 6.5, 8.5).looking_at(Vec3::new(0.0, 0.3, -0.6), Vec3::Y),
+        AmbientLight {
+            color: Color::WHITE,
+            brightness: 350.0,
+            ..default()
+        },
     ));
 
     // --- lighting ---
@@ -54,11 +60,6 @@ fn setup(
         },
         Transform::from_xyz(5.0, 12.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    commands.insert_resource(AmbientLight {
-        color: Color::WHITE,
-        brightness: 350.0,
-        ..default()
-    });
 
     let table_radius = 4.0;
 
