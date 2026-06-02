@@ -7,10 +7,8 @@ import { decideAction } from '../src/engine/ai.js'
 import { CHARACTERS } from '../src/engine/characters.js'
 import { draw, W, H } from '../src/ui/tableRender.js'
 
-// Deterministic roster that always includes Mortimer (the hooded standee).
-const mortimer = CHARACTERS.find((c) => c.id === 'mortimer')
-const others = CHARACTERS.filter((c) => c.id !== 'mortimer').slice(0, 4)
-const opps = [others[0], others[1], mortimer, others[2], others[3]]
+// Seat the whole 4-character roster for the preview.
+const opps = CHARACTERS.slice(0, 4)
 const players = [
   { id: 'human', name: 'You', isHuman: true, avatar: '😎', color: '#2c8fd6' },
   ...opps.map((c) => ({ id: c.id, name: c.name, isHuman: false, avatar: c.avatar, color: c.color, character: c })),

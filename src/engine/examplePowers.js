@@ -7,7 +7,7 @@
 //
 //   import { PowerRegistry } from './powers.js'
 //   import { extraHoleCard } from './examplePowers.js'
-//   const powers = new PowerRegistry([extraHoleCard('baron')])
+//   const powers = new PowerRegistry([extraHoleCard('gnash')])
 //   const game = new PokerGame({ players, powers })
 //
 // Then (optionally) attach a power to a character by setting `character.power`

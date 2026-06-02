@@ -1,14 +1,23 @@
 # Character art
 
-Drop PNGs here and reference them from `src/engine/characters.js` via the
-`image` field (path relative to this `public/` folder).
+Drop the four character PNGs here, named exactly as below. They load
+automatically; until a file exists, a colored stand-in (with the character's
+emoji face) is drawn instead.
 
-Currently expected:
+| File         | Character | Vibe                                   |
+|--------------|-----------|----------------------------------------|
+| `buck.png`   | Buck      | big-toothed, nervous grinder           |
+| `gnash.png`  | Gnash     | manic purple gremlin, all teeth        |
+| `grin.png`   | Grin      | cheerful blob, calls everything        |
+| `frost.png`  | Frost     | stone-faced figure in a red cap        |
 
-- `hoodguy.png` — Mortimer, the hooded figure (replaces the old Baron seat).
-  Until you add the file, a hand-drawn hooded fallback is rendered instead.
+After adding the files, shrink them for the web:
+
+```
+npm run art:optimize
+```
 
 Tips for standee art:
 - Transparent background (PNG).
-- Roughly portrait orientation; the character is anchored by its feet/base and
-  drawn upright behind the table, so full-body or waist-up both work.
+- Portrait-ish; the character is anchored by its base and drawn upright behind
+  the table, so full-body or waist-up both work.

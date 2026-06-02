@@ -180,9 +180,8 @@ function drawStandee(ctx, s, images) {
     let dh = sw / ar
     if (dh > sh) { dh = sh; dw = sh * ar }
     ctx.drawImage(img, ax - dw / 2, bottom - dh, dw, dh)
-  } else if (p.character?.image) {
-    drawHoodedFallback(ctx, ax, bottom, sw, sh, p.color)
   } else {
+    // No art (yet) — draw a colored stand-in with the character's emoji face.
     drawAvatarStandee(ctx, p, ax, bottom, sw, sh)
   }
   ctx.restore()
@@ -197,40 +196,6 @@ function drawStandee(ctx, s, images) {
     ellipse(ctx, ax, bottom - 4, sw * 0.34, 12 * scale)
     ctx.stroke()
     ctx.restore()
-  }
-}
-
-// Hand-drawn hooded figure — stand-in for hoodguy.png until the file is added.
-function drawHoodedFallback(ctx, cxs, bottom, w, h, color) {
-  const top = bottom - h
-  const midX = cxs
-  const cloakW = w * 0.7
-  // Cloak/robe body.
-  ctx.fillStyle = color || '#7a1f1f'
-  ctx.beginPath()
-  ctx.moveTo(midX - cloakW * 0.22, top + h * 0.18)
-  ctx.quadraticCurveTo(midX, top - h * 0.02, midX + cloakW * 0.22, top + h * 0.18)
-  ctx.quadraticCurveTo(midX + cloakW * 0.6, top + h * 0.6, midX + cloakW * 0.5, bottom)
-  ctx.quadraticCurveTo(midX, bottom + h * 0.04, midX - cloakW * 0.5, bottom)
-  ctx.quadraticCurveTo(midX - cloakW * 0.6, top + h * 0.6, midX - cloakW * 0.22, top + h * 0.18)
-  ctx.closePath()
-  ctx.fill()
-  // Darker hood opening.
-  ctx.fillStyle = '#170707'
-  ctx.beginPath()
-  ctx.ellipse(midX, top + h * 0.2, cloakW * 0.18, h * 0.16, 0, 0, Math.PI * 2)
-  ctx.fill()
-  // Two big eyes.
-  const eyeR = w * 0.05
-  for (const ex of [-0.5, 0.5]) {
-    ctx.fillStyle = '#f4f4f4'
-    ctx.beginPath()
-    ctx.arc(midX + ex * cloakW * 0.12, top + h * 0.2, eyeR, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.fillStyle = '#111'
-    ctx.beginPath()
-    ctx.arc(midX + ex * cloakW * 0.12, top + h * 0.21, eyeR * 0.45, 0, Math.PI * 2)
-    ctx.fill()
   }
 }
 

@@ -54,7 +54,7 @@ function Setup({ onStart }) {
       <div className="field">
         <span>Opponents: {count}</span>
         <div className="opp-buttons">
-          {[1, 2, 3, 4, 5].map((c) => (
+          {[1, 2, 3, 4].map((c) => (
             <button
               key={c}
               className={c === count ? 'opp opp--on' : 'opp'}

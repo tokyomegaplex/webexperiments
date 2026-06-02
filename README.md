@@ -25,16 +25,17 @@ npm run build    # production bundle in dist/
   characters drawn as upright "standees" seated around it (back players smaller
   for depth; the table occludes their lower bodies). Pot, dealer button, bet
   chips and floating speech bubbles included.
-- A roster of 6 original cartoon characters + **Dottie the Dealer** as host.
-  One of them, **Mortimer**, is a hooded figure rendered from a PNG standee.
+- A roster of 4 cartoon characters (Buck, Gnash, Grin, Frost) + **Dottie the
+  Dealer** as host. Each is rendered from a PNG standee.
 
 ### Character art
 
-Drop a PNG at `public/characters/<name>.png` and point a character's `image`
-field (in `characters.js`) at it. Until the file exists, a hand-drawn stand-in
-is rendered. Mortimer expects `public/characters/hoodguy.png`. The renderer
-anchors art by its base and draws it upright behind the table, so full-body or
-waist-up art both work; use a transparent background.
+Each character has an `image` field (in `characters.js`) pointing at a PNG under
+`public/characters/`. Drop the files in (see `public/characters/README.md` for
+the exact names), then shrink them with `npm run art:optimize`. Until a file
+exists, a colored stand-in with the character's emoji face is drawn. The
+renderer anchors art by its base and draws it upright behind the table, so
+full-body or waist-up art both work; use a transparent background.
 
 ## Architecture — built to be mutated
 
@@ -76,7 +77,7 @@ import { extraHoleCard } from './engine/examplePowers.js'
 import { PokerGame } from './engine/pokerGame.js'
 
 const powers = new PowerRegistry([
-  extraHoleCard('baron'),   // the Baron secretly gets a 3rd hole card
+  extraHoleCard('gnash'),   // Gnash secretly gets a 3rd hole card
 ])
 const game = new PokerGame({ players, powers })
 ```
