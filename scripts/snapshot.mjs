@@ -4,10 +4,13 @@ import { createCanvas } from 'canvas'
 import { writeFileSync } from 'node:fs'
 import { PokerGame } from '../src/engine/pokerGame.js'
 import { decideAction } from '../src/engine/ai.js'
-import { pickOpponents } from '../src/engine/characters.js'
+import { CHARACTERS } from '../src/engine/characters.js'
 import { draw, W, H } from '../src/ui/tableRender.js'
 
-const opps = pickOpponents(5)
+// Deterministic roster that always includes Mortimer (the hooded standee).
+const mortimer = CHARACTERS.find((c) => c.id === 'mortimer')
+const others = CHARACTERS.filter((c) => c.id !== 'mortimer').slice(0, 4)
+const opps = [others[0], others[1], mortimer, others[2], others[3]]
 const players = [
   { id: 'human', name: 'You', isHuman: true, avatar: '😎', color: '#2c8fd6' },
   ...opps.map((c) => ({ id: c.id, name: c.name, isHuman: false, avatar: c.avatar, color: c.color, character: c })),
@@ -27,9 +30,23 @@ while (game.state.actingIndex !== -1 && game.state.community.length < 3 && steps
   steps++
 }
 
+// Try to load any character art so the snapshot matches the browser.
+const images = {}
+for (const p of players) {
+  const rel = p.character?.image
+  if (rel && !images[rel]) {
+    try {
+      const { loadImage } = await import('canvas')
+      images[rel] = await loadImage(new URL(`../public/${rel}`, import.meta.url))
+    } catch {
+      /* file not present yet — the drawn fallback will be used */
+    }
+  }
+}
+
 const canvas = createCanvas(W, H)
 const ctx = canvas.getContext('2d')
-draw(ctx, game.state, {}, "And the flop comes down...", false)
+draw(ctx, game.state, { dealerSay: 'And the flop comes down...', images })
 
 const out = process.argv[2] || 'table-preview.png'
 writeFileSync(out, canvas.toBuffer('image/png'))

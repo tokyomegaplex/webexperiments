@@ -21,9 +21,20 @@ npm run build    # production bundle in dist/
 - **Smart AI** opponents: each decision uses a Monte-Carlo equity estimate vs.
   pot odds, flavored by the character's personality (aggression / tightness /
   bluff).
-- **Canvas-rendered** table: oval felt, seats, hole cards, community cards,
-  pot, dealer button, and floating speech bubbles for character barks.
+- **2.5D perspective** canvas table: a tilted felt with a wooden rail and
+  characters drawn as upright "standees" seated around it (back players smaller
+  for depth; the table occludes their lower bodies). Pot, dealer button, bet
+  chips and floating speech bubbles included.
 - A roster of 6 original cartoon characters + **Dottie the Dealer** as host.
+  One of them, **Mortimer**, is a hooded figure rendered from a PNG standee.
+
+### Character art
+
+Drop a PNG at `public/characters/<name>.png` and point a character's `image`
+field (in `characters.js`) at it. Until the file exists, a hand-drawn stand-in
+is rendered. Mortimer expects `public/characters/hoodguy.png`. The renderer
+anchors art by its base and draws it upright behind the table, so full-body or
+waist-up art both work; use a transparent background.
 
 ## Architecture — built to be mutated
 
