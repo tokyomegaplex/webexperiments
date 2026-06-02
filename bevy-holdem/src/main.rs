@@ -9,6 +9,8 @@
 //! approach and the art pipeline. Run with `cargo run` (see README).
 
 use bevy::prelude::*;
+use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+use std::env;
 
 mod characters;
 use characters::roster;
@@ -17,20 +19,49 @@ use characters::roster;
 #[derive(Component)]
 struct Billboard;
 
+/// When SCREENSHOT=<path> is set, the app renders a few frames, saves a PNG to
+/// that path, and exits — used for automated visual checks (headless via Xvfb).
+#[derive(Resource)]
+struct ShotState {
+    path: String,
+    frame: u32,
+}
+
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Cartoon Hold'em (Bevy)".into(),
-                resolution: [1100u32, 760].into(),
-                ..default()
-            }),
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Cartoon Hold'em (Bevy)".into(),
+            resolution: [1100u32, 760].into(),
             ..default()
-        }))
-        .insert_resource(ClearColor(Color::srgb(0.03, 0.05, 0.04)))
-        .add_systems(Startup, setup)
-        .add_systems(Update, billboard_system)
-        .run();
+        }),
+        ..default()
+    }))
+    .insert_resource(ClearColor(Color::srgb(0.04, 0.06, 0.07)))
+    .add_systems(Startup, setup)
+    .add_systems(Update, billboard_system);
+
+    if let Ok(path) = env::var("SCREENSHOT") {
+        app.insert_resource(ShotState { path, frame: 0 })
+            .add_systems(Update, screenshot_system);
+    }
+
+    app.run();
+}
+
+fn screenshot_system(mut state: ResMut<ShotState>, mut commands: Commands) {
+    state.frame += 1;
+    // Give the renderer + async texture loads a few frames to settle.
+    if state.frame == 30 {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(state.path.clone()));
+    }
+    // The screenshot is written asynchronously a frame or two after capture;
+    // by now it's safely on disk, so just end the process.
+    if state.frame >= 60 {
+        std::process::exit(0);
+    }
 }
 
 fn setup(
@@ -39,73 +70,103 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
 ) {
-    // --- camera: looking down at the felt from the player's side ---
+    // Oval table dimensions (x radius, z radius) and felt surface height.
+    let rx = 5.4_f32;
+    let rz = 3.9_f32;
+    let felt_top = 0.2_f32;
+
+    // --- camera: low, table-filling three-quarter view ---
     // (AmbientLight is a per-camera component in Bevy 0.18, not a resource.)
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 6.5, 8.5).looking_at(Vec3::new(0.0, 0.3, -0.6), Vec3::Y),
+        Transform::from_xyz(0.0, 3.6, 8.8).looking_at(Vec3::new(0.0, 1.5, -2.2), Vec3::Y),
         AmbientLight {
-            color: Color::WHITE,
-            brightness: 350.0,
+            color: Color::srgb(0.82, 0.86, 1.0),
+            brightness: 600.0,
             ..default()
         },
     ));
 
-    // --- lighting ---
+    // --- lighting: warm key + cool fill ---
     commands.spawn((
         DirectionalLight {
-            illuminance: 7000.0,
+            color: Color::srgb(1.0, 0.96, 0.88),
+            illuminance: 8500.0,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(5.0, 12.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(6.0, 12.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    commands.spawn((
+        DirectionalLight {
+            color: Color::srgb(0.7, 0.8, 1.0),
+            illuminance: 2500.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(-7.0, 6.0, -4.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
-    let table_radius = 4.0;
-
-    // --- felt (a flattened cylinder) ---
+    // --- felt (a unit cylinder scaled into an oval) ---
     commands.spawn((
-        Mesh3d(meshes.add(Cylinder::new(table_radius, 0.4))),
+        Mesh3d(meshes.add(Cylinder::new(1.0, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(22, 120, 76),
+            base_color: Color::srgb_u8(26, 124, 80),
             perceptual_roughness: 0.95,
             ..default()
         })),
-        Transform::from_xyz(0.0, 0.0, 0.0),
+        Transform::from_xyz(0.0, 0.0, 0.0).with_scale(Vec3::new(rx, 0.4, rz)),
     ));
 
-    // --- wooden rail (slightly larger, darker, just below) ---
+    // --- wooden rail (a larger, darker oval just below the felt) ---
     commands.spawn((
-        Mesh3d(meshes.add(Cylinder::new(table_radius + 0.35, 0.34))),
+        Mesh3d(meshes.add(Cylinder::new(1.0, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(64, 40, 22),
-            perceptual_roughness: 0.7,
+            base_color: Color::srgb_u8(74, 46, 26),
+            perceptual_roughness: 0.6,
             ..default()
         })),
-        Transform::from_xyz(0.0, -0.16, 0.0),
+        Transform::from_xyz(0.0, -0.12, 0.0).with_scale(Vec3::new(rx + 0.5, 0.34, rz + 0.5)),
     ));
 
     // --- floor ---
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(60.0, 60.0))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(80.0, 80.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(14, 28, 20),
+            base_color: Color::srgb_u8(18, 26, 22),
             ..default()
         })),
-        Transform::from_xyz(0.0, -0.45, 0.0),
+        Transform::from_xyz(0.0, -0.5, 0.0),
     ));
 
-    // --- characters: seated around the back arc as billboards ---
+    // --- backdrop wall (kills the black void; lit for a soft gradient) ---
+    commands.spawn((
+        Mesh3d(meshes.add(Rectangle::new(90.0, 44.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(28, 40, 52),
+            perceptual_roughness: 1.0,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 12.0, -16.0),
+    ));
+
+    // --- characters: seated around the back + sides as upright standees ---
+    // Front-center (toward the camera) is left open for the human.
     let chars = roster();
-    let n = chars.len();
-    let quad = meshes.add(Rectangle::new(2.0, 2.6));
+    let floor_y = -0.5_f32;
+    let quad_w = 3.2_f32;
+    let quad_h = 4.0_f32;
+    let quad = meshes.add(Rectangle::new(quad_w, quad_h));
+    let prx = rx + 0.35; // placement ellipse, hugging the outer rail
+    let prz = rz + 0.55;
+    let count = chars.len().max(1);
     for (i, c) in chars.iter().enumerate() {
-        // Spread evenly across the rear arc (roughly 200deg .. 340deg).
-        let t = if n > 1 { i as f32 / (n - 1) as f32 } else { 0.5 };
-        let angle = std::f32::consts::PI * (1.18 + 0.64 * t);
-        let r = table_radius + 1.15;
-        let x = angle.cos() * r;
-        let z = angle.sin() * r;
+        // Wrap evenly across the far half of the table (200deg .. 340deg),
+        // leaving the near edge (toward the camera) open for the human.
+        let span = 140.0;
+        let angle = (200.0 + span * i as f32 / (count as f32 - 1.0).max(1.0)).to_radians();
+        let x = angle.cos() * prx;
+        let z = angle.sin() * prz;
 
         let material = materials.add(StandardMaterial {
             base_color: c.color,
@@ -120,7 +181,9 @@ fn setup(
         commands.spawn((
             Mesh3d(quad.clone()),
             MeshMaterial3d(material),
-            Transform::from_xyz(x, 1.3, z),
+            // Feet on the floor; the table edge crosses the lower body so they
+            // read as seated rather than floating.
+            Transform::from_xyz(x, floor_y + quad_h / 2.0, z),
             Billboard,
             Name::new(c.name),
         ));
@@ -133,22 +196,23 @@ fn setup(
         perceptual_roughness: 0.6,
         ..default()
     });
+    let card_y = felt_top + 0.02;
     for i in 0..5 {
-        let x = (i as f32 - 2.0) * 0.86;
+        let x = (i as f32 - 2.0) * 0.9;
         commands.spawn((
             Mesh3d(card.clone()),
             MeshMaterial3d(card_mat.clone()),
-            Transform::from_xyz(x, 0.22, -0.2),
+            Transform::from_xyz(x, card_y, -0.4),
         ));
     }
 
     // --- the human's two hole cards, near the front edge ---
     for i in 0..2 {
-        let x = (i as f32 - 0.5) * 0.86;
+        let x = (i as f32 - 0.5) * 0.9;
         commands.spawn((
             Mesh3d(card.clone()),
             MeshMaterial3d(card_mat.clone()),
-            Transform::from_xyz(x, 0.22, 3.0),
+            Transform::from_xyz(x, card_y, 2.6),
         ));
     }
 }
