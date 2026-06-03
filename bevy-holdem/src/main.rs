@@ -95,7 +95,7 @@ fn setup(
         // HDR + bloom so the lamp bulb (and its emissive shade) actually glow.
         Hdr,
         Tonemapping::None,
-        Bloom { intensity: 0.18, ..Bloom::NATURAL },
+        Bloom { intensity: 0.22, ..Bloom::NATURAL },
         Transform::from_translation(cam_pos).looking_at(Vec3::new(0.0, 1.8, -2.0), Vec3::Y),
         AmbientLight {
             color: Color::srgb(0.78, 0.82, 1.0),
@@ -123,15 +123,26 @@ fn setup(
         },
         Transform::from_xyz(-7.0, 6.0, -4.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    // Cool back/hair light from behind the table: rims the rail and the
+    // characters' edges so the players separate from the backdrop.
+    commands.spawn((
+        DirectionalLight {
+            color: Color::srgb(0.5, 0.66, 1.0),
+            illuminance: 1500.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 7.5, -11.0).looking_at(Vec3::new(0.0, 2.6, 3.0), Vec3::Y),
+    ));
     // Warm hanging lamp casting a pool of light onto the felt (the mood key).
     commands.spawn((
         SpotLight {
-            intensity: 8_000_000.0,
-            color: Color::srgb(1.0, 0.89, 0.7),
+            intensity: 9_500_000.0,
+            color: Color::srgb(1.0, 0.85, 0.6),
             shadows_enabled: true,
             range: 45.0,
-            outer_angle: 0.7,
-            inner_angle: 0.38,
+            outer_angle: 0.66,
+            inner_angle: 0.42,
             ..default()
         },
         Transform::from_xyz(0.0, 9.5, -0.3).looking_at(Vec3::new(0.0, felt_top, -0.5), Vec3::Y),
@@ -165,10 +176,27 @@ fn setup(
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: Some(asset_server.load("felt.png")),
-            perceptual_roughness: 0.95,
+            // A touch glossier so the lamp leaves a soft sheen pool on the cloth.
+            perceptual_roughness: 0.82,
+            reflectance: 0.35,
             ..default()
         })),
         Transform::from_xyz(0.0, felt_top - 0.15, 0.0).with_scale(Vec3::new(rx, 0.3, rz)),
+    ));
+
+    // --- gold inlay line where the felt meets the rail (bloom catches it) ---
+    commands.spawn((
+        Mesh3d(meshes.add(Torus { minor_radius: 0.013, major_radius: 1.0 })),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(214, 176, 96),
+            emissive: LinearRgba::rgb(0.45, 0.34, 0.11),
+            metallic: 0.9,
+            perceptual_roughness: 0.28,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, felt_top + 0.004, 0.0)
+            .with_scale(Vec3::new(rx * 0.985, 1.0, rz * 0.985)),
+        NotShadowCaster,
     ));
 
     // --- padded rail (a larger, darker oval at the felt edge) ---
@@ -255,17 +283,54 @@ fn setup(
         .collect();
     let card_y = felt_top + 0.02;
 
-    // Spawn a small stack of `n` chips centered at (x, z).
+    // Spawn a small stack of `n` chips centered at (x, z). Every 4th chip uses
+    // a contrasting colour so the stacks read as banded denominations.
     let chip_stack = |commands: &mut Commands, x: f32, z: f32, n: usize, mat: usize| {
+        let base = mat % chip_mats.len();
+        let accent = (mat + 2) % chip_mats.len();
         for k in 0..n {
+            let m = if k % 4 == 3 { &chip_mats[accent] } else { &chip_mats[base] };
             commands.spawn((
                 Mesh3d(disc.clone()),
-                MeshMaterial3d(chip_mats[mat % chip_mats.len()].clone()),
+                MeshMaterial3d(m.clone()),
                 Transform::from_xyz(x, card_y + 0.022 + k as f32 * 0.045, z)
                     .with_scale(Vec3::new(0.24, 0.04, 0.24)),
             ));
         }
     };
+
+    // --- cup-holders recessed into the padded rail (gold rim + dark hole) ---
+    let holder_y = felt_top - 0.045;
+    let holder_rim = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(206, 170, 96),
+        emissive: LinearRgba::rgb(0.16, 0.12, 0.04),
+        metallic: 0.9,
+        perceptual_roughness: 0.3,
+        ..default()
+    });
+    let holder_hole = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(12, 9, 7),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    let holder_ring = meshes.add(Torus { minor_radius: 0.03, major_radius: 0.15 });
+    for j in 0..9 {
+        // Spread around the rail, leaving a ~40deg gap at the front (the camera seat).
+        let a = (110.0 + 320.0 * j as f32 / 8.0).to_radians();
+        let hx = a.cos() * (rx + 0.18);
+        let hz = a.sin() * (rz + 0.30);
+        commands.spawn((
+            Mesh3d(holder_ring.clone()),
+            MeshMaterial3d(holder_rim.clone()),
+            Transform::from_xyz(hx, holder_y + 0.01, hz),
+            NotShadowCaster,
+        ));
+        commands.spawn((
+            Mesh3d(disc.clone()),
+            MeshMaterial3d(holder_hole.clone()),
+            Transform::from_xyz(hx, holder_y, hz).with_scale(Vec3::new(0.15, 0.02, 0.15)),
+        ));
+    }
 
     // --- characters: seated around the back + sides as upright standees ---
     // Front-center (toward the camera) is left open for the human.
@@ -350,10 +415,12 @@ fn setup(
         ));
     }
 
-    // --- the pot, in the middle ---
-    chip_stack(&mut commands, -0.3, 0.5, 6, 0);
-    chip_stack(&mut commands, 0.1, 0.55, 5, 1);
-    chip_stack(&mut commands, -0.1, 0.2, 4, 3);
+    // --- the pot, in the middle: a banded mound of varied stacks ---
+    chip_stack(&mut commands, -0.3, 0.5, 8, 0);
+    chip_stack(&mut commands, 0.12, 0.56, 6, 1);
+    chip_stack(&mut commands, -0.08, 0.18, 5, 3);
+    chip_stack(&mut commands, 0.34, 0.26, 4, 4);
+    chip_stack(&mut commands, -0.42, 0.16, 3, 2);
 
     // --- dealer button, lying flat on the felt near a player ---
     commands.spawn((
@@ -405,6 +472,13 @@ fn setup(
             Transform::from_xyz(x, card_y, 2.7),
         ));
     }
+
+    // --- burn card: a lone face-down card beside the flop ---
+    commands.spawn((
+        Mesh3d(card.clone()),
+        MeshMaterial3d(card_back_mat.clone()),
+        Transform::from_xyz(-2.75, card_y, -0.6).with_rotation(Quat::from_rotation_y(0.14)),
+    ));
 }
 
 /// Each frame: face the camera (yaw only, stays upright) and apply a very
