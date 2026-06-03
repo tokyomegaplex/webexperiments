@@ -385,9 +385,9 @@ fn setup(
     }
 }
 
-/// Each frame: face the camera (yaw only, stays upright) and apply a subtle,
-/// stepped (~12fps) noise wobble in position, lean, and scale so the standees
-/// feel hand-animated / "boiling" like stop-motion rather than dead-still.
+/// Each frame: face the camera (yaw only, stays upright) and apply a very
+/// subtle, stepped (~4fps) noise wobble in position, lean, and scale so the
+/// standees feel hand-animated / "boiling" like stop-motion, not dead-still.
 fn standee_system(
     time: Res<Time>,
     camera: Query<&Transform, (With<Camera3d>, Without<Standee>)>,
@@ -409,7 +409,7 @@ fn standee_system(
         let nsc = hash11(s.seed * 5.2 + step * 0.0051) * 2.0 - 1.0;
 
         // Very subtle wobble amounts.
-        let pos = s.base + Vec3::new(nx * 0.02, ny * 0.016, 0.0);
+        let pos = s.base + Vec3::new(nx * 0.011, ny * 0.009, 0.0);
         t.translation = pos;
 
         // Face the camera, yaw only (target at the standee's own height).
@@ -417,8 +417,8 @@ fn standee_system(
         t.look_at(target, Vec3::Y);
 
         // A tiny lean + scale pulse on top of the facing rotation.
-        t.rotate_local_z(nlean * 0.01);
-        t.scale = s.base_scale * (1.0 + nsc * 0.008);
+        t.rotate_local_z(nlean * 0.005);
+        t.scale = s.base_scale * (1.0 + nsc * 0.004);
     }
 }
 
