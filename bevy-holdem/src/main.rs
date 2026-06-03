@@ -97,11 +97,11 @@ fn setup(
         },
     ));
 
-    // --- lighting: warm key + cool fill ---
+    // --- lighting: warm key + cool fill + an overhead lamp pool ---
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(1.0, 0.96, 0.88),
-            illuminance: 8500.0,
+            illuminance: 6000.0,
             shadows_enabled: true,
             ..default()
         },
@@ -110,19 +110,32 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(0.7, 0.8, 1.0),
-            illuminance: 2500.0,
+            illuminance: 2000.0,
             shadows_enabled: false,
             ..default()
         },
         Transform::from_xyz(-7.0, 6.0, -4.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    // Warm hanging lamp casting a pool of light onto the felt.
+    commands.spawn((
+        SpotLight {
+            intensity: 4_000_000.0,
+            color: Color::srgb(1.0, 0.9, 0.72),
+            shadows_enabled: true,
+            range: 40.0,
+            outer_angle: 0.75,
+            inner_angle: 0.45,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 9.0, -0.5).looking_at(Vec3::new(0.0, felt_top, -0.5), Vec3::Y),
     ));
 
     // --- table top (felt), raised to real table height ---
     commands.spawn((
         Mesh3d(meshes.add(Cylinder::new(1.0, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(26, 124, 80),
-            perceptual_roughness: 0.95,
+            base_color: Color::srgb_u8(30, 135, 86),
+            perceptual_roughness: 0.9,
             ..default()
         })),
         Transform::from_xyz(0.0, felt_top - 0.15, 0.0).with_scale(Vec3::new(rx, 0.3, rz)),
@@ -137,6 +150,18 @@ fn setup(
             ..default()
         })),
         Transform::from_xyz(0.0, felt_top - 0.22, 0.0).with_scale(Vec3::new(rx + 0.4, 0.34, rz + 0.4)),
+    ));
+
+    // --- betting line (thin ring on the felt) ---
+    commands.spawn((
+        Mesh3d(meshes.add(Torus { minor_radius: 0.03, major_radius: 1.0 })),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(16, 92, 60),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, felt_top + 0.005, -0.3)
+            .with_scale(Vec3::new(rx * 0.6, 1.0, rz * 0.58)),
     ));
 
     // --- pedestal down to the floor ---
