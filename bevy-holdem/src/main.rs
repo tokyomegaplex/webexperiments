@@ -9,6 +9,7 @@
 //! approach and the art pipeline. Run with `cargo run` (see README).
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use std::env;
@@ -91,8 +92,8 @@ fn setup(
         Tonemapping::None,
         Transform::from_xyz(0.0, 4.7, 10.4).looking_at(Vec3::new(0.0, 1.8, -2.0), Vec3::Y),
         AmbientLight {
-            color: Color::srgb(0.9, 0.92, 1.0),
-            brightness: 700.0,
+            color: Color::srgb(0.78, 0.82, 1.0),
+            brightness: 280.0,
             ..default()
         },
     ));
@@ -101,7 +102,7 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(1.0, 0.96, 0.88),
-            illuminance: 6000.0,
+            illuminance: 3500.0,
             shadows_enabled: true,
             ..default()
         },
@@ -110,24 +111,24 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(0.7, 0.8, 1.0),
-            illuminance: 2000.0,
+            illuminance: 900.0,
             shadows_enabled: false,
             ..default()
         },
         Transform::from_xyz(-7.0, 6.0, -4.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    // Warm hanging lamp casting a pool of light onto the felt.
+    // Warm hanging lamp casting a pool of light onto the felt (the mood key).
     commands.spawn((
         SpotLight {
-            intensity: 4_000_000.0,
-            color: Color::srgb(1.0, 0.9, 0.72),
+            intensity: 8_000_000.0,
+            color: Color::srgb(1.0, 0.89, 0.7),
             shadows_enabled: true,
-            range: 40.0,
-            outer_angle: 0.75,
-            inner_angle: 0.45,
+            range: 45.0,
+            outer_angle: 0.7,
+            inner_angle: 0.38,
             ..default()
         },
-        Transform::from_xyz(0.0, 9.0, -0.5).looking_at(Vec3::new(0.0, felt_top, -0.5), Vec3::Y),
+        Transform::from_xyz(0.0, 9.5, -0.3).looking_at(Vec3::new(0.0, felt_top, -0.5), Vec3::Y),
     ));
 
     // --- table top (felt), raised to real table height ---
@@ -191,12 +192,49 @@ fn setup(
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(90.0, 44.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(28, 40, 52),
+            base_color: Color::srgb_u8(14, 18, 26),
             perceptual_roughness: 1.0,
             ..default()
         })),
         Transform::from_xyz(0.0, 12.0, -16.0),
     ));
+
+    // Shared meshes/materials for chips and soft "blob" shadows.
+    let disc = meshes.add(Cylinder::new(1.0, 1.0)); // reused, scaled per use
+    let blob_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.0, 0.0, 0.0, 0.34),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    let chip_colors = [
+        Color::srgb_u8(200, 46, 46),
+        Color::srgb_u8(44, 92, 200),
+        Color::srgb_u8(34, 150, 84),
+        Color::srgb_u8(232, 232, 224),
+        Color::srgb_u8(150, 70, 190),
+    ];
+    let chip_mats: Vec<_> = chip_colors
+        .iter()
+        .map(|c| materials.add(StandardMaterial {
+            base_color: *c,
+            perceptual_roughness: 0.5,
+            ..default()
+        }))
+        .collect();
+    let card_y = felt_top + 0.02;
+
+    // Spawn a small stack of `n` chips centered at (x, z).
+    let chip_stack = |commands: &mut Commands, x: f32, z: f32, n: usize, mat: usize| {
+        for k in 0..n {
+            commands.spawn((
+                Mesh3d(disc.clone()),
+                MeshMaterial3d(chip_mats[mat % chip_mats.len()].clone()),
+                Transform::from_xyz(x, card_y + 0.022 + k as f32 * 0.045, z)
+                    .with_scale(Vec3::new(0.24, 0.04, 0.24)),
+            ));
+        }
+    };
 
     // --- characters: seated around the back + sides as upright standees ---
     // Front-center (toward the camera) is left open for the human.
@@ -216,12 +254,11 @@ fn setup(
         let z = angle.sin() * prz;
 
         let material = materials.add(StandardMaterial {
-            // White base so the PNG shows its true colors (no tint); `color`
-            // stays only as a conceptual fallback and is not multiplied in.
+            // White base so the PNG shows its true colors (no tint); now lit so
+            // the standees sit in the scene's lighting (the lamp pool).
             base_color: Color::WHITE,
             base_color_texture: Some(asset_server.load(c.file)),
             alpha_mode: AlphaMode::Blend,
-            unlit: true,
             double_sided: true,
             cull_mode: None,
             ..default()
@@ -234,6 +271,8 @@ fn setup(
             Mesh3d(quad.clone()),
             MeshMaterial3d(material),
             Transform::from_translation(base),
+            // Flat quads make ugly shadows; use a blob shadow instead.
+            NotShadowCaster,
             Standee {
                 base,
                 base_scale: Vec3::ONE,
@@ -241,32 +280,56 @@ fn setup(
             },
             Name::new(c.name),
         ));
+
+        // Soft contact/blob shadow on the floor beneath the standee.
+        commands.spawn((
+            Mesh3d(disc.clone()),
+            MeshMaterial3d(blob_mat.clone()),
+            Transform::from_xyz(x, floor_y + 0.02, z)
+                .with_scale(Vec3::new(1.7, 0.02, 1.1)),
+        ));
+
+        // This player's chip stacks, just inside the rail in front of them.
+        let cxp = angle.cos() * rx * 0.64;
+        let czp = angle.sin() * rz * 0.64;
+        chip_stack(&mut commands, cxp, czp, 4 + i % 3, i);
+        chip_stack(&mut commands, cxp + 0.32, czp + 0.04, 3 + i % 2, (i + 2) % 5);
     }
 
-    // --- community card slots on the felt ---
+    // --- the pot, in the middle ---
+    chip_stack(&mut commands, -0.3, 0.5, 6, 0);
+    chip_stack(&mut commands, 0.1, 0.55, 5, 1);
+    chip_stack(&mut commands, -0.1, 0.2, 4, 3);
+
+    // --- community cards on the felt ---
     let card = meshes.add(Cuboid::new(0.72, 0.04, 1.02));
     let card_mat = materials.add(StandardMaterial {
         base_color: Color::srgb_u8(250, 250, 244),
-        perceptual_roughness: 0.6,
+        perceptual_roughness: 0.5,
         ..default()
     });
-    let card_y = felt_top + 0.02;
+    // Red "card back" for the human's face-down hole cards.
+    let card_back_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(150, 40, 52),
+        perceptual_roughness: 0.5,
+        ..default()
+    });
     for i in 0..5 {
-        let x = (i as f32 - 2.0) * 0.9;
+        let x = (i as f32 - 2.0) * 0.84;
         commands.spawn((
             Mesh3d(card.clone()),
             MeshMaterial3d(card_mat.clone()),
-            Transform::from_xyz(x, card_y, -0.4),
+            Transform::from_xyz(x, card_y, -0.6),
         ));
     }
 
-    // --- the human's two hole cards, near the front edge ---
+    // --- the human's two hole cards (face down), near the front edge ---
     for i in 0..2 {
-        let x = (i as f32 - 0.5) * 0.9;
+        let x = (i as f32 - 0.5) * 0.84;
         commands.spawn((
             Mesh3d(card.clone()),
-            MeshMaterial3d(card_mat.clone()),
-            Transform::from_xyz(x, card_y, 2.6),
+            MeshMaterial3d(card_back_mat.clone()),
+            Transform::from_xyz(x, card_y, 2.7),
         ));
     }
 }
