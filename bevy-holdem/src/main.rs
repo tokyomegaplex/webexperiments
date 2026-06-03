@@ -10,6 +10,8 @@
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::NotShadowCaster;
+use bevy::post_process::bloom::Bloom;
+use bevy::render::view::Hdr;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use std::env;
@@ -90,7 +92,10 @@ fn setup(
     let cam_pos = Vec3::new(0.0, 4.7, 10.4);
     commands.spawn((
         Camera3d::default(),
+        // HDR + bloom so the lamp bulb (and its emissive shade) actually glow.
+        Hdr,
         Tonemapping::None,
+        Bloom { intensity: 0.18, ..Bloom::NATURAL },
         Transform::from_translation(cam_pos).looking_at(Vec3::new(0.0, 1.8, -2.0), Vec3::Y),
         AmbientLight {
             color: Color::srgb(0.78, 0.82, 1.0),
@@ -158,8 +163,9 @@ fn setup(
     commands.spawn((
         Mesh3d(meshes.add(Cylinder::new(1.0, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(30, 135, 86),
-            perceptual_roughness: 0.9,
+            base_color: Color::WHITE,
+            base_color_texture: Some(asset_server.load("felt.png")),
+            perceptual_roughness: 0.95,
             ..default()
         })),
         Transform::from_xyz(0.0, felt_top - 0.15, 0.0).with_scale(Vec3::new(rx, 0.3, rz)),
@@ -346,6 +352,20 @@ fn setup(
     chip_stack(&mut commands, -0.3, 0.5, 6, 0);
     chip_stack(&mut commands, 0.1, 0.55, 5, 1);
     chip_stack(&mut commands, -0.1, 0.2, 4, 3);
+
+    // --- dealer button, lying flat on the felt near a player ---
+    commands.spawn((
+        Mesh3d(disc.clone()),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(asset_server.load("button_d.png")),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_xyz(-1.7, card_y + 0.01, 1.0)
+            .with_scale(Vec3::new(0.34, 0.04, 0.34)),
+    ));
 
     // --- community cards on the felt (flat quads with real face textures) ---
     let card_face_quad = meshes.add(Rectangle::new(0.78, 1.08));
