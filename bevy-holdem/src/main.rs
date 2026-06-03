@@ -175,8 +175,9 @@ fn setup(
     commands.spawn((
         Mesh3d(meshes.add(Cylinder::new(1.0, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(74, 46, 26),
-            perceptual_roughness: 0.6,
+            base_color: Color::WHITE,
+            base_color_texture: Some(asset_server.load("wood.png")),
+            perceptual_roughness: 0.45,
             ..default()
         })),
         Transform::from_xyz(0.0, felt_top - 0.22, 0.0).with_scale(Vec3::new(rx + 0.4, 0.34, rz + 0.4)),
@@ -217,12 +218,13 @@ fn setup(
         Transform::from_xyz(0.0, -0.5, 0.0),
     ));
 
-    // --- backdrop wall (kills the black void; lit for a soft gradient) ---
+    // --- backdrop wall: a studio cyclorama with a soft glow behind the table ---
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(90.0, 44.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(14, 18, 26),
-            perceptual_roughness: 1.0,
+            base_color: Color::WHITE,
+            base_color_texture: Some(asset_server.load("backdrop.png")),
+            unlit: true,
             ..default()
         })),
         Transform::from_xyz(0.0, 12.0, -16.0),
