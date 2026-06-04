@@ -286,22 +286,23 @@ fn setup(
             .with_scale(Vec3::new(rx * 0.4, ped_top - floor_y, rz * 0.4)),
     ));
 
-    // --- floor: tiled patterned carpet ---
-    let carpet_tex = asset_server.load_with_settings(
-        "carpet.png",
-        |s: &mut ImageLoaderSettings| {
+    // Load an image set to tile (repeat) so big surfaces don't stretch.
+    let tiled = |path: &str| -> Handle<Image> {
+        asset_server.load_with_settings(path.to_string(), |s: &mut ImageLoaderSettings| {
             s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
                 address_mode_u: ImageAddressMode::Repeat,
                 address_mode_v: ImageAddressMode::Repeat,
                 ..ImageSamplerDescriptor::linear()
             });
-        },
-    );
+        })
+    };
+
+    // --- floor: tiled patterned carpet ---
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(80.0, 80.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.7, 0.7, 0.72),
-            base_color_texture: Some(carpet_tex),
+            base_color_texture: Some(tiled("carpet.png")),
             // Tile the 80x80 floor so the damask reads at a believable scale.
             uv_transform: Affine2::from_scale(Vec2::splat(20.0)),
             perceptual_roughness: 0.95,
@@ -310,16 +311,47 @@ fn setup(
         Transform::from_xyz(0.0, -0.5, 0.0),
     ));
 
-    // --- backdrop wall: a studio cyclorama with a soft glow behind the table ---
+    // --- the room: textured back/side walls + a coffered ceiling ---
+    let ceiling_y = 9.5_f32;
+    let back_z = -13.5_f32;
+    let wall_x = 14.0_f32;
+    let side_len = 21.5_f32; // z extent of the side walls / ceiling
+    let side_cz = -2.75_f32; // their z centre
+    let wall_h = ceiling_y - floor_y;
+    let wall_cy = (ceiling_y + floor_y) / 2.0;
+    let wall_mat = |tex: Handle<Image>, sx: f32, sy: f32| StandardMaterial {
+        base_color: Color::srgb(0.85, 0.85, 0.85),
+        base_color_texture: Some(tex),
+        uv_transform: Affine2::from_scale(Vec2::new(sx, sy)),
+        perceptual_roughness: 0.95,
+        ..default()
+    };
+    // back wall
     commands.spawn((
-        Mesh3d(meshes.add(Rectangle::new(90.0, 44.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            base_color_texture: Some(asset_server.load("backdrop.png")),
-            unlit: true,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, 12.0, -16.0),
+        Mesh3d(meshes.add(Rectangle::new(2.0 * wall_x, wall_h))),
+        MeshMaterial3d(materials.add(wall_mat(tiled("wall.png"), 9.0, 3.0))),
+        Transform::from_xyz(0.0, wall_cy, back_z),
+    ));
+    // left wall (normal faces +X, inward)
+    commands.spawn((
+        Mesh3d(meshes.add(Rectangle::new(side_len, wall_h))),
+        MeshMaterial3d(materials.add(wall_mat(tiled("wall.png"), 7.0, 3.0))),
+        Transform::from_xyz(-wall_x, wall_cy, side_cz)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+    ));
+    // right wall (normal faces -X, inward)
+    commands.spawn((
+        Mesh3d(meshes.add(Rectangle::new(side_len, wall_h))),
+        MeshMaterial3d(materials.add(wall_mat(tiled("wall.png"), 7.0, 3.0))),
+        Transform::from_xyz(wall_x, wall_cy, side_cz)
+            .with_rotation(Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2)),
+    ));
+    // ceiling (normal faces down)
+    commands.spawn((
+        Mesh3d(meshes.add(Rectangle::new(2.0 * wall_x, side_len))),
+        MeshMaterial3d(materials.add(wall_mat(tiled("ceiling.png"), 7.0, 5.0))),
+        Transform::from_xyz(0.0, ceiling_y, side_cz)
+            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
     ));
 
     // --- background bar: a back cabinet, a counter, and rows of bottles ---
@@ -359,39 +391,62 @@ fn setup(
         })),
         Transform::from_xyz(0.0, floor_y + 1.55, bar_z + 1.4),
     ));
-    // bottles on the two shelves (slightly emissive so they read in the gloom)
+    // bottles: muted glass, varied sizes, each with a small paper label.
     let bottle_cols = [
-        Color::srgb_u8(120, 180, 90),  // green
-        Color::srgb_u8(200, 150, 60),  // amber
-        Color::srgb_u8(210, 80, 70),   // red
-        Color::srgb_u8(180, 200, 210), // clear
-        Color::srgb_u8(110, 150, 200), // blue
+        Color::srgb_u8(40, 66, 46),    // dark green
+        Color::srgb_u8(74, 50, 30),    // brown
+        Color::srgb_u8(120, 124, 118), // smoke / clear
+        Color::srgb_u8(96, 66, 30),    // amber
+        Color::srgb_u8(70, 42, 40),    // dark red-brown
     ];
-    let bottle_mesh = meshes.add(Cylinder::new(0.12, 0.66));
-    let neck_mesh = meshes.add(Cylinder::new(0.05, 0.3));
-    for (si, sh) in [1.92_f32, 3.12].iter().enumerate() {
-        let mut bx = -9.6;
-        let mut k = si * 3;
-        while bx < 9.6 {
-            let col = bottle_cols[k % bottle_cols.len()];
-            let lin = col.to_linear();
-            let body = materials.add(StandardMaterial {
-                base_color: col,
-                emissive: LinearRgba::rgb(lin.red * 0.12, lin.green * 0.12, lin.blue * 0.12),
-                perceptual_roughness: 0.3,
-                reflectance: 0.35,
+    let bottle_mats: Vec<_> = bottle_cols
+        .iter()
+        .map(|c| {
+            let lin = c.to_linear();
+            materials.add(StandardMaterial {
+                base_color: *c,
+                emissive: LinearRgba::rgb(lin.red * 0.05, lin.green * 0.05, lin.blue * 0.05),
+                perceptual_roughness: 0.25,
+                reflectance: 0.45,
                 ..default()
-            });
+            })
+        })
+        .collect();
+    let label_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(asset_server.load("label.png")),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    let bz = bar_z - 0.45;
+    for (si, shelf_top) in [floor_y + 1.56, floor_y + 2.76].iter().enumerate() {
+        let mut bx = -9.6;
+        let mut k = si * 2;
+        while bx < 9.6 {
+            let mat = bottle_mats[k % bottle_mats.len()].clone();
+            // vary the silhouette: height, body radius, neck length.
+            let h = 0.46 + (k % 4) as f32 * 0.13; // 0.46 .. 0.85
+            let rad = 0.1 + (k % 3) as f32 * 0.022; // 0.10 .. 0.144
+            let neck_h = 0.22 + (k % 2) as f32 * 0.12;
+            let cy = shelf_top + h / 2.0;
             commands.spawn((
-                Mesh3d(bottle_mesh.clone()),
-                MeshMaterial3d(body.clone()),
-                Transform::from_xyz(bx, floor_y + sh, bar_z - 0.45),
+                Mesh3d(meshes.add(Cylinder::new(rad, h))),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_xyz(bx, cy, bz),
                 NotShadowCaster,
             ));
             commands.spawn((
-                Mesh3d(neck_mesh.clone()),
-                MeshMaterial3d(body),
-                Transform::from_xyz(bx, floor_y + sh + 0.46, bar_z - 0.45),
+                Mesh3d(meshes.add(Cylinder::new(rad * 0.4, neck_h))),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(bx, cy + h / 2.0 + neck_h / 2.0 - 0.01, bz),
+                NotShadowCaster,
+            ));
+            // paper label on the front face (toward the camera)
+            commands.spawn((
+                Mesh3d(meshes.add(Rectangle::new(rad * 1.5, h * 0.5))),
+                MeshMaterial3d(label_mat.clone()),
+                Transform::from_xyz(bx, cy, bz + rad + 0.006),
                 NotShadowCaster,
             ));
             bx += 0.62;
@@ -409,6 +464,56 @@ fn setup(
         },
         Transform::from_xyz(0.0, floor_y + 2.4, bar_z + 1.0),
     ));
+
+    // --- bar stools in front of the counter ---
+    let stool_metal = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(38, 38, 42),
+        metallic: 0.6,
+        perceptual_roughness: 0.45,
+        ..default()
+    });
+    let stool_seat_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(96, 28, 30),
+        perceptual_roughness: 0.5,
+        ..default()
+    });
+    let stool_seat_mesh = meshes.add(Cylinder::new(0.36, 0.14));
+    let stool_post_mesh = meshes.add(Cylinder::new(0.07, 1.5));
+    let stool_ring_mesh = meshes.add(Torus { minor_radius: 0.028, major_radius: 0.26 });
+    let stool_y = floor_y + 1.5;
+    for sx in [-6.5_f32, -2.2, 2.2, 6.5] {
+        let sz = bar_z + 2.7;
+        commands.spawn((
+            Mesh3d(stool_seat_mesh.clone()),
+            MeshMaterial3d(stool_seat_mat.clone()),
+            Transform::from_xyz(sx, stool_y, sz),
+        ));
+        commands.spawn((
+            Mesh3d(stool_post_mesh.clone()),
+            MeshMaterial3d(stool_metal.clone()),
+            Transform::from_xyz(sx, floor_y + 0.75, sz),
+        ));
+        commands.spawn((
+            Mesh3d(stool_ring_mesh.clone()),
+            MeshMaterial3d(stool_metal.clone()),
+            Transform::from_xyz(sx, floor_y + 0.45, sz),
+            NotShadowCaster,
+        ));
+    }
+
+    // Shared meshes/materials for chairs behind the seated players.
+    let chair_wood = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(58, 36, 22),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+    let chair_leather = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(104, 30, 32),
+        perceptual_roughness: 0.55,
+        ..default()
+    });
+    let chair_back_mesh = meshes.add(Cuboid::new(1.5, 1.2, 0.12));
+    let chair_post_mesh = meshes.add(Cylinder::new(0.07, 2.4));
 
     // Shared meshes/materials for chips and soft "blob" shadows.
     let disc = meshes.add(Cylinder::new(1.0, 1.0)); // reused, scaled per use
@@ -501,6 +606,28 @@ fn setup(
         let angle = (200.0 + span * i as f32 / (count as f32 - 1.0).max(1.0)).to_radians();
         let x = angle.cos() * prx;
         let z = angle.sin() * prz;
+
+        // A chair behind each player: a leather backrest on two posts, facing
+        // the table so it reads as the seat they're sitting in.
+        let cback = Vec3::new(angle.cos() * (prx + 0.5), floor_y + 2.0, angle.sin() * (prz + 0.7));
+        let yaw = (-angle.cos()).atan2(-angle.sin());
+        let crot = Quat::from_rotation_y(yaw);
+        let cright = crot * Vec3::X;
+        commands.spawn((
+            Mesh3d(chair_back_mesh.clone()),
+            MeshMaterial3d(chair_leather.clone()),
+            Transform::from_translation(cback).with_rotation(crot),
+        ));
+        for s in [-1.0_f32, 1.0] {
+            commands.spawn((
+                Mesh3d(chair_post_mesh.clone()),
+                MeshMaterial3d(chair_wood.clone()),
+                Transform::from_translation(
+                    Vec3::new(cback.x, floor_y + 1.3, cback.z) + cright * (0.66 * s),
+                )
+                .with_rotation(crot),
+            ));
+        }
 
         let material = materials.add(StandardMaterial {
             // White base so the PNG shows its true colors (no tint); now lit so
