@@ -9,7 +9,9 @@
 //! approach and the art pipeline. Run with `cargo run` (see README).
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::NotShadowCaster;
+use bevy::math::Affine2;
 use bevy::post_process::bloom::Bloom;
 use bevy::render::view::Hdr;
 use bevy::prelude::*;
@@ -95,7 +97,7 @@ fn setup(
         // HDR + bloom so the lamp bulb (and its emissive shade) actually glow.
         Hdr,
         Tonemapping::None,
-        Bloom { intensity: 0.22, ..Bloom::NATURAL },
+        Bloom { intensity: 0.14, ..Bloom::NATURAL },
         Transform::from_translation(cam_pos).looking_at(Vec3::new(0.0, 1.8, -2.0), Vec3::Y),
         AmbientLight {
             color: Color::srgb(0.78, 0.82, 1.0),
@@ -135,38 +137,85 @@ fn setup(
         Transform::from_xyz(0.0, 7.5, -11.0).looking_at(Vec3::new(0.0, 2.6, 3.0), Vec3::Y),
     ));
     // Warm hanging lamp casting a pool of light onto the felt (the mood key).
+    // Kept below clipping so the felt centre doesn't blow out to white.
     commands.spawn((
         SpotLight {
-            intensity: 9_500_000.0,
-            color: Color::srgb(1.0, 0.85, 0.6),
+            intensity: 4_500_000.0,
+            color: Color::srgb(1.0, 0.84, 0.58),
             shadows_enabled: true,
             range: 45.0,
-            outer_angle: 0.66,
-            inner_angle: 0.42,
+            outer_angle: 0.7,
+            inner_angle: 0.4,
             ..default()
         },
         Transform::from_xyz(0.0, 9.5, -0.3).looking_at(Vec3::new(0.0, felt_top, -0.5), Vec3::Y),
     ));
-    // Hanging lamp shade (apex down) + a glowing bulb, for atmosphere.
+
+    // --- the hanging lamp: chain, bronze fitting, a glowing cloth shade ---
+    let lamp_x = 0.0;
+    let lamp_z = -0.4;
+    let shade_y = 6.5;
+    let bronze = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(120, 86, 40),
+        metallic: 0.8,
+        perceptual_roughness: 0.4,
+        ..default()
+    });
+    // chain up out of frame
     commands.spawn((
-        Mesh3d(meshes.add(Cone { radius: 1.2, height: 1.3 })),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(30, 26, 22),
-            emissive: LinearRgba::rgb(0.25, 0.18, 0.08),
-            perceptual_roughness: 0.5,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, 6.4, -0.4).with_rotation(Quat::from_rotation_x(std::f32::consts::PI)),
+        Mesh3d(meshes.add(Cylinder::new(0.035, 4.0))),
+        MeshMaterial3d(bronze.clone()),
+        Transform::from_xyz(lamp_x, shade_y + 2.6, lamp_z),
         NotShadowCaster,
     ));
+    // top fitting / finial
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(0.22))),
+        Mesh3d(meshes.add(Cylinder::new(0.16, 0.22))),
+        MeshMaterial3d(bronze.clone()),
+        Transform::from_xyz(lamp_x, shade_y + 0.62, lamp_z),
+        NotShadowCaster,
+    ));
+    // the cloth shade: a wide bronze-framed frustum, lit warm from within
+    commands.spawn((
+        Mesh3d(meshes.add(ConicalFrustum {
+            radius_top: 0.5,
+            radius_bottom: 1.6,
+            height: 1.15,
+        })),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.92, 0.7),
-            emissive: LinearRgba::rgb(3.0, 2.4, 1.2),
+            base_color: Color::WHITE,
+            base_color_texture: Some(asset_server.load("lampshade.png")),
+            emissive: LinearRgba::rgb(0.62, 0.46, 0.2),
+            double_sided: true,
+            cull_mode: None,
+            perceptual_roughness: 0.7,
             ..default()
         })),
-        Transform::from_xyz(0.0, 5.95, -0.4),
+        Transform::from_xyz(lamp_x, shade_y, lamp_z),
+        NotShadowCaster,
+    ));
+    // glowing diffuser disc across the bottom opening (the lit underside)
+    commands.spawn((
+        Mesh3d(meshes.add(Circle::new(1.5))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.86, 0.6),
+            emissive: LinearRgba::rgb(0.72, 0.52, 0.26),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_xyz(lamp_x, shade_y - 0.56, lamp_z)
+            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+        NotShadowCaster,
+    ));
+    // bulb glow inside (kept modest so it reads as a bulb, not a flare)
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(0.18))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.92, 0.72),
+            emissive: LinearRgba::rgb(1.4, 1.12, 0.62),
+            ..default()
+        })),
+        Transform::from_xyz(lamp_x, shade_y - 0.2, lamp_z),
         NotShadowCaster,
     ));
 
@@ -176,9 +225,10 @@ fn setup(
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: Some(asset_server.load("felt.png")),
-            // A touch glossier so the lamp leaves a soft sheen pool on the cloth.
-            perceptual_roughness: 0.82,
-            reflectance: 0.35,
+            // Mostly matte cloth with only a hint of sheen, so the lamp pool
+            // doesn't clip to white.
+            perceptual_roughness: 0.9,
+            reflectance: 0.18,
             ..default()
         })),
         Transform::from_xyz(0.0, felt_top - 0.15, 0.0).with_scale(Vec3::new(rx, 0.3, rz)),
@@ -189,7 +239,7 @@ fn setup(
         Mesh3d(meshes.add(Torus { minor_radius: 0.013, major_radius: 1.0 })),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb_u8(214, 176, 96),
-            emissive: LinearRgba::rgb(0.45, 0.34, 0.11),
+            emissive: LinearRgba::rgb(0.28, 0.21, 0.07),
             metallic: 0.9,
             perceptual_roughness: 0.28,
             ..default()
@@ -236,11 +286,25 @@ fn setup(
             .with_scale(Vec3::new(rx * 0.4, ped_top - floor_y, rz * 0.4)),
     ));
 
-    // --- floor ---
+    // --- floor: tiled patterned carpet ---
+    let carpet_tex = asset_server.load_with_settings(
+        "carpet.png",
+        |s: &mut ImageLoaderSettings| {
+            s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..ImageSamplerDescriptor::linear()
+            });
+        },
+    );
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(80.0, 80.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(18, 26, 22),
+            base_color: Color::srgb(0.7, 0.7, 0.72),
+            base_color_texture: Some(carpet_tex),
+            // Tile the 80x80 floor so the damask reads at a believable scale.
+            uv_transform: Affine2::from_scale(Vec2::splat(20.0)),
+            perceptual_roughness: 0.95,
             ..default()
         })),
         Transform::from_xyz(0.0, -0.5, 0.0),
@@ -256,6 +320,94 @@ fn setup(
             ..default()
         })),
         Transform::from_xyz(0.0, 12.0, -16.0),
+    ));
+
+    // --- background bar: a back cabinet, a counter, and rows of bottles ---
+    let bar_z = -11.5;
+    let dark_wood = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(34, 22, 16),
+        perceptual_roughness: 0.7,
+        ..default()
+    });
+    // tall back cabinet
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(24.0, 5.4, 0.5))),
+        MeshMaterial3d(dark_wood.clone()),
+        Transform::from_xyz(0.0, floor_y + 2.7, bar_z - 0.7),
+    ));
+    // two shelves
+    for sh in [1.5_f32, 2.7] {
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(22.0, 0.12, 0.7))),
+            MeshMaterial3d(dark_wood.clone()),
+            Transform::from_xyz(0.0, floor_y + sh, bar_z - 0.45),
+        ));
+    }
+    // counter front + top
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(22.0, 1.5, 0.4))),
+        MeshMaterial3d(dark_wood.clone()),
+        Transform::from_xyz(0.0, floor_y + 0.75, bar_z + 1.4),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(22.4, 0.22, 1.5))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(48, 30, 20),
+            perceptual_roughness: 0.35,
+            reflectance: 0.4,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, floor_y + 1.55, bar_z + 1.4),
+    ));
+    // bottles on the two shelves (slightly emissive so they read in the gloom)
+    let bottle_cols = [
+        Color::srgb_u8(120, 180, 90),  // green
+        Color::srgb_u8(200, 150, 60),  // amber
+        Color::srgb_u8(210, 80, 70),   // red
+        Color::srgb_u8(180, 200, 210), // clear
+        Color::srgb_u8(110, 150, 200), // blue
+    ];
+    let bottle_mesh = meshes.add(Cylinder::new(0.12, 0.66));
+    let neck_mesh = meshes.add(Cylinder::new(0.05, 0.3));
+    for (si, sh) in [1.92_f32, 3.12].iter().enumerate() {
+        let mut bx = -9.6;
+        let mut k = si * 3;
+        while bx < 9.6 {
+            let col = bottle_cols[k % bottle_cols.len()];
+            let lin = col.to_linear();
+            let body = materials.add(StandardMaterial {
+                base_color: col,
+                emissive: LinearRgba::rgb(lin.red * 0.12, lin.green * 0.12, lin.blue * 0.12),
+                perceptual_roughness: 0.3,
+                reflectance: 0.35,
+                ..default()
+            });
+            commands.spawn((
+                Mesh3d(bottle_mesh.clone()),
+                MeshMaterial3d(body.clone()),
+                Transform::from_xyz(bx, floor_y + sh, bar_z - 0.45),
+                NotShadowCaster,
+            ));
+            commands.spawn((
+                Mesh3d(neck_mesh.clone()),
+                MeshMaterial3d(body),
+                Transform::from_xyz(bx, floor_y + sh + 0.46, bar_z - 0.45),
+                NotShadowCaster,
+            ));
+            bx += 0.62;
+            k += 1;
+        }
+    }
+    // a warm wash on the back bar (limited range so nothing clips)
+    commands.spawn((
+        PointLight {
+            intensity: 900_000.0,
+            color: Color::srgb(1.0, 0.82, 0.55),
+            range: 16.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(0.0, floor_y + 2.4, bar_z + 1.0),
     ));
 
     // Shared meshes/materials for chips and soft "blob" shadows.
@@ -479,6 +631,81 @@ fn setup(
         MeshMaterial3d(card_back_mat.clone()),
         Transform::from_xyz(-2.75, card_y, -0.6).with_rotation(Quat::from_rotation_y(0.14)),
     ));
+
+    // --- ashtray with two cigarettes, off to the back-right of the felt ---
+    let ash_x = 3.0;
+    let ash_z = -1.5;
+    let glass = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(40, 44, 48),
+        perceptual_roughness: 0.2,
+        reflectance: 0.6,
+        metallic: 0.1,
+        ..default()
+    });
+    // shallow dish + rim
+    commands.spawn((
+        Mesh3d(disc.clone()),
+        MeshMaterial3d(glass.clone()),
+        Transform::from_xyz(ash_x, felt_top + 0.03, ash_z).with_scale(Vec3::new(0.42, 0.06, 0.42)),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Torus { minor_radius: 0.03, major_radius: 0.4 })),
+        MeshMaterial3d(glass.clone()),
+        Transform::from_xyz(ash_x, felt_top + 0.07, ash_z),
+        NotShadowCaster,
+    ));
+    // a little grey ash pile in the dish
+    commands.spawn((
+        Mesh3d(disc.clone()),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(120, 116, 110),
+            perceptual_roughness: 1.0,
+            ..default()
+        })),
+        Transform::from_xyz(ash_x, felt_top + 0.055, ash_z).with_scale(Vec3::new(0.22, 0.04, 0.22)),
+    ));
+    // two cigarettes resting across the rim
+    let cig_paper = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(238, 234, 226),
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let cig_filter = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(196, 150, 90),
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let cig_ember = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(80, 30, 12),
+        emissive: LinearRgba::rgb(1.2, 0.35, 0.05),
+        ..default()
+    });
+    let cig_mesh = meshes.add(Cylinder::new(0.028, 0.62));
+    for (sx, ang) in [(-0.18_f32, 0.5_f32), (0.16, -0.7)] {
+        let rot = Quat::from_rotation_y(ang) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let base = Vec3::new(ash_x + sx, felt_top + 0.08, ash_z);
+        let dir = rot * Vec3::Y; // cylinder long axis after rotation
+        commands.spawn((
+            Mesh3d(cig_mesh.clone()),
+            MeshMaterial3d(cig_paper.clone()),
+            Transform::from_translation(base).with_rotation(rot),
+            NotShadowCaster,
+        ));
+        // filter end
+        commands.spawn((
+            Mesh3d(meshes.add(Cylinder::new(0.03, 0.16))),
+            MeshMaterial3d(cig_filter.clone()),
+            Transform::from_translation(base - dir * 0.36).with_rotation(rot),
+            NotShadowCaster,
+        ));
+        // glowing ember at the far tip
+        commands.spawn((
+            Mesh3d(meshes.add(Cylinder::new(0.028, 0.05))),
+            MeshMaterial3d(cig_ember.clone()),
+            Transform::from_translation(base + dir * 0.33).with_rotation(rot),
+            NotShadowCaster,
+        ));
+    }
 }
 
 /// Each frame: face the camera (yaw only, stays upright) and apply a very
