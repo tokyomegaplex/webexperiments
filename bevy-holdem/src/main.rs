@@ -28,6 +28,17 @@ struct Standee {
     base: Vec3,
     base_scale: Vec3,
     seed: f32,
+    /// Extra yaw applied after facing the camera (turns the end seats slightly
+    /// inward so they sit naturally in their chairs).
+    yaw_offset: f32,
+}
+
+/// A drifting cigarette-smoke puff: rises, sways, grows and fades on a loop.
+#[derive(Component)]
+struct Smoke {
+    origin: Vec3,
+    phase: f32,
+    speed: f32,
 }
 
 /// When SCREENSHOT=<path> is set, the app renders a few frames, saves a PNG to
@@ -50,7 +61,7 @@ fn main() {
     }))
     .insert_resource(ClearColor(Color::srgb(0.04, 0.06, 0.07)))
     .add_systems(Startup, setup)
-    .add_systems(Update, standee_system);
+    .add_systems(Update, (standee_system, smoke_system));
 
     if let Ok(path) = env::var("SCREENSHOT") {
         app.insert_resource(ShotState { path, frame: 0 })
@@ -135,6 +146,17 @@ fn setup(
             ..default()
         },
         Transform::from_xyz(0.0, 7.5, -11.0).looking_at(Vec3::new(0.0, 2.6, 3.0), Vec3::Y),
+    ));
+    // Front fill from the camera side: brightens the players (who face the
+    // camera) and the foreground felt without lifting the moody back bar much.
+    commands.spawn((
+        DirectionalLight {
+            color: Color::srgb(1.0, 0.95, 0.88),
+            illuminance: 2300.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 5.5, 11.0).looking_at(Vec3::new(0.0, 2.0, -3.0), Vec3::Y),
     ));
     // Warm hanging lamp casting a pool of light onto the felt (the mood key).
     // Kept below clipping so the felt centre doesn't blow out to white.
@@ -311,6 +333,19 @@ fn setup(
         Transform::from_xyz(0.0, -0.5, 0.0),
     ));
 
+    // --- a patterned rug under the table (sits on top of the carpet) ---
+    commands.spawn((
+        Mesh3d(meshes.add(Rectangle::new(15.5, 11.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.9, 0.9, 0.9),
+            base_color_texture: Some(asset_server.load("rug.png")),
+            perceptual_roughness: 0.95,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, floor_y + 0.02, 0.6)
+            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+    ));
+
     // --- the room: textured back/side walls + a coffered ceiling ---
     let ceiling_y = 9.5_f32;
     let back_z = -13.5_f32;
@@ -354,6 +389,41 @@ fn setup(
             .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
     ));
 
+    // --- framed pictures on the back wall, up above the bar (gilt + unlit) ---
+    let frame_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(150, 116, 52),
+        emissive: LinearRgba::rgb(0.06, 0.05, 0.02),
+        metallic: 0.8,
+        perceptual_roughness: 0.35,
+        ..default()
+    });
+    // (art, width, height, x, y) on the back wall (faces +Z toward the room)
+    let pics = [
+        ("art_landscape.png", 3.0_f32, 2.3_f32, -7.0_f32, 6.4_f32),
+        ("art_portrait.png", 2.0, 2.6, -2.6, 6.4),
+        ("art_stilllife.png", 2.0, 2.6, 2.6, 6.4),
+        ("art_landscape.png", 3.0, 2.3, 7.0, 6.4),
+    ];
+    for (art, w, h, px, py) in pics {
+        let frame_pos = Vec3::new(px, py, back_z + 0.12);
+        let art_pos = Vec3::new(px, py, back_z + 0.23);
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(w + 0.24, h + 0.24, 0.12))),
+            MeshMaterial3d(frame_mat.clone()),
+            Transform::from_translation(frame_pos),
+        ));
+        commands.spawn((
+            Mesh3d(meshes.add(Rectangle::new(w, h))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: Some(asset_server.load(art)),
+                unlit: true,
+                ..default()
+            })),
+            Transform::from_translation(art_pos),
+        ));
+    }
+
     // --- background bar: a back cabinet, a counter, and rows of bottles ---
     let bar_z = -11.5;
     let dark_wood = materials.add(StandardMaterial {
@@ -384,9 +454,11 @@ fn setup(
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(22.4, 0.22, 1.5))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(48, 30, 20),
-            perceptual_roughness: 0.35,
-            reflectance: 0.4,
+            // Polished lacquered bar top: glossy so lights/bottles glint on it.
+            base_color: Color::srgb_u8(40, 24, 16),
+            perceptual_roughness: 0.08,
+            metallic: 0.2,
+            reflectance: 0.7,
             ..default()
         })),
         Transform::from_xyz(0.0, floor_y + 1.55, bar_z + 1.4),
@@ -402,12 +474,10 @@ fn setup(
     let bottle_mats: Vec<_> = bottle_cols
         .iter()
         .map(|c| {
-            let lin = c.to_linear();
             materials.add(StandardMaterial {
                 base_color: *c,
-                emissive: LinearRgba::rgb(lin.red * 0.05, lin.green * 0.05, lin.blue * 0.05),
-                perceptual_roughness: 0.25,
-                reflectance: 0.45,
+                perceptual_roughness: 0.22,
+                reflectance: 0.5,
                 ..default()
             })
         })
@@ -419,51 +489,201 @@ fn setup(
         unlit: true,
         ..default()
     });
+    // Deterministic PRNG so the clutter is randomized but stable across runs.
+    let mut seed: u32 = 0x9E37_79B9;
+    let mut rng = move || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 9) as f32 / 8_388_608.0
+    };
     let bz = bar_z - 0.45;
-    for (si, shelf_top) in [floor_y + 1.56, floor_y + 2.76].iter().enumerate() {
-        let mut bx = -9.6;
-        let mut k = si * 2;
-        while bx < 9.6 {
-            let mat = bottle_mats[k % bottle_mats.len()].clone();
-            // vary the silhouette: height, body radius, neck length.
-            let h = 0.46 + (k % 4) as f32 * 0.13; // 0.46 .. 0.85
-            let rad = 0.1 + (k % 3) as f32 * 0.022; // 0.10 .. 0.144
-            let neck_h = 0.22 + (k % 2) as f32 * 0.12;
+    for shelf_top in [floor_y + 1.56, floor_y + 2.76] {
+        let mut bx = -9.9;
+        while bx < 9.5 {
+            let mat = bottle_mats[(rng() * 5.0) as usize % bottle_mats.len()].clone();
+            // randomized silhouette
+            let rad = 0.085 + rng() * 0.06; // 0.085 .. 0.145
+            let h = 0.42 + rng() * 0.5; // 0.42 .. 0.92
+            let neck_h = 0.18 + rng() * 0.16;
+            let jz = (rng() - 0.5) * 0.14; // depth jitter so they don't line up
             let cy = shelf_top + h / 2.0;
+            bx += rad; // advance to this bottle's centre
             commands.spawn((
                 Mesh3d(meshes.add(Cylinder::new(rad, h))),
                 MeshMaterial3d(mat.clone()),
-                Transform::from_xyz(bx, cy, bz),
+                Transform::from_xyz(bx, cy, bz + jz),
                 NotShadowCaster,
             ));
             commands.spawn((
                 Mesh3d(meshes.add(Cylinder::new(rad * 0.4, neck_h))),
                 MeshMaterial3d(mat),
-                Transform::from_xyz(bx, cy + h / 2.0 + neck_h / 2.0 - 0.01, bz),
+                Transform::from_xyz(bx, cy + h / 2.0 + neck_h / 2.0 - 0.01, bz + jz),
                 NotShadowCaster,
             ));
-            // paper label on the front face (toward the camera)
-            commands.spawn((
-                Mesh3d(meshes.add(Rectangle::new(rad * 1.5, h * 0.5))),
-                MeshMaterial3d(label_mat.clone()),
-                Transform::from_xyz(bx, cy, bz + rad + 0.006),
-                NotShadowCaster,
-            ));
-            bx += 0.62;
-            k += 1;
+            if rng() > 0.18 {
+                commands.spawn((
+                    Mesh3d(meshes.add(Rectangle::new(rad * 1.5, h * 0.5))),
+                    MeshMaterial3d(label_mat.clone()),
+                    Transform::from_xyz(bx, cy, bz + jz + rad + 0.006),
+                    NotShadowCaster,
+                ));
+            }
+            // tight, uneven gap to the next bottle (often nearly touching)
+            bx += rad + 0.005 + rng() * 0.05;
         }
     }
-    // a warm wash on the back bar (limited range so nothing clips)
+    // a dim warm wash on the back bar (kept low so the bar reads moodier
+    // than the brighter foreground)
     commands.spawn((
         PointLight {
-            intensity: 900_000.0,
-            color: Color::srgb(1.0, 0.82, 0.55),
-            range: 16.0,
+            intensity: 420_000.0,
+            color: Color::srgb(1.0, 0.78, 0.5),
+            range: 15.0,
             shadows_enabled: false,
             ..default()
         },
         Transform::from_xyz(0.0, floor_y + 2.4, bar_z + 1.0),
     ));
+
+    // --- bartender behind the counter (stylised: shirt, vest, bow-tie) ---
+    {
+        let bx = -7.5;
+        let bbz = bar_z + 0.4; // between the back shelves and the counter
+        let shirt = materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(232, 230, 224),
+            perceptual_roughness: 0.7,
+            ..default()
+        });
+        let vest = materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(28, 28, 34),
+            perceptual_roughness: 0.6,
+            ..default()
+        });
+        let skin = materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(232, 196, 150),
+            perceptual_roughness: 0.8,
+            ..default()
+        });
+        let hair = materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(48, 32, 22),
+            perceptual_roughness: 0.9,
+            ..default()
+        });
+        // torso (white shirt) with a dark vest panel in front
+        commands.spawn((
+            Mesh3d(meshes.add(Cylinder::new(0.42, 1.5))),
+            MeshMaterial3d(shirt.clone()),
+            Transform::from_xyz(bx, floor_y + 2.25, bbz),
+        ));
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.66, 1.35, 0.2))),
+            MeshMaterial3d(vest.clone()),
+            Transform::from_xyz(bx, floor_y + 2.2, bbz + 0.34),
+        ));
+        // bow-tie
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.22, 0.09, 0.08))),
+            MeshMaterial3d(vest.clone()),
+            Transform::from_xyz(bx, floor_y + 2.92, bbz + 0.4),
+        ));
+        // head + hair
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(0.34))),
+            MeshMaterial3d(skin.clone()),
+            Transform::from_xyz(bx, floor_y + 3.32, bbz + 0.05),
+        ));
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(0.36))),
+            MeshMaterial3d(hair.clone()),
+            Transform::from_xyz(bx, floor_y + 3.52, bbz + 0.0)
+                .with_scale(Vec3::new(1.0, 0.6, 1.0)),
+        ));
+        // two arms resting toward the counter
+        for s in [-1.0_f32, 1.0] {
+            commands.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.12, 1.1))),
+                MeshMaterial3d(shirt.clone()),
+                Transform::from_xyz(bx + s * 0.5, floor_y + 2.0, bbz + 0.25)
+                    .with_rotation(Quat::from_rotation_z(s * 0.5) * Quat::from_rotation_x(0.6)),
+            ));
+        }
+    }
+
+    // --- clutter on the bar top: coasters, glasses, a beer tap ---
+    let counter_y = floor_y + 1.55 + 0.11; // top surface of the bar
+    let counter_z = bar_z + 1.4;
+    let coaster_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(58, 40, 26),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    let glass_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.85, 0.7, 0.4, 0.4),
+        alpha_mode: AlphaMode::Blend,
+        perceptual_roughness: 0.05,
+        reflectance: 0.6,
+        ..default()
+    });
+    let glass_mesh = meshes.add(Cylinder::new(0.1, 0.24));
+    let coaster_mesh = meshes.add(Cylinder::new(1.0, 1.0));
+    for (cx, has_glass) in [(-6.5_f32, true), (-2.2, false), (2.2, true), (4.0, true), (6.5, false)] {
+        commands.spawn((
+            Mesh3d(coaster_mesh.clone()),
+            MeshMaterial3d(coaster_mat.clone()),
+            Transform::from_xyz(cx, counter_y + 0.012, counter_z + 0.1)
+                .with_scale(Vec3::new(0.32, 0.025, 0.32)),
+        ));
+        if has_glass {
+            commands.spawn((
+                Mesh3d(glass_mesh.clone()),
+                MeshMaterial3d(glass_mat.clone()),
+                Transform::from_xyz(cx, counter_y + 0.14, counter_z + 0.1),
+                NotShadowCaster,
+            ));
+        }
+    }
+    // beer-tap tower with three coloured handles
+    let chrome = materials.add(StandardMaterial {
+        base_color: Color::srgb_u8(180, 184, 190),
+        metallic: 0.9,
+        perceptual_roughness: 0.18,
+        ..default()
+    });
+    let tap_x = -4.4;
+    commands.spawn((
+        Mesh3d(meshes.add(Cylinder::new(0.08, 0.6))),
+        MeshMaterial3d(chrome.clone()),
+        Transform::from_xyz(tap_x, counter_y + 0.3, counter_z),
+    ));
+    let handle_cols = [
+        Color::srgb_u8(150, 40, 40),
+        Color::srgb_u8(40, 90, 60),
+        Color::srgb_u8(190, 150, 60),
+    ];
+    for (hi, hc) in handle_cols.iter().enumerate() {
+        let hx = tap_x + (hi as f32 - 1.0) * 0.16;
+        // little spout
+        commands.spawn((
+            Mesh3d(meshes.add(Cylinder::new(0.02, 0.16))),
+            MeshMaterial3d(chrome.clone()),
+            Transform::from_xyz(hx, counter_y + 0.18, counter_z + 0.14)
+                .with_rotation(Quat::from_rotation_x(0.5)),
+        ));
+        // handle knob
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(0.07))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: *hc,
+                perceptual_roughness: 0.5,
+                ..default()
+            })),
+            Transform::from_xyz(hx, counter_y + 0.62, counter_z + 0.02),
+        ));
+        commands.spawn((
+            Mesh3d(meshes.add(Cylinder::new(0.018, 0.3))),
+            MeshMaterial3d(chrome.clone()),
+            Transform::from_xyz(hx, counter_y + 0.47, counter_z + 0.02),
+        ));
+    }
 
     // --- bar stools in front of the counter ---
     let stool_metal = materials.add(StandardMaterial {
@@ -512,8 +732,8 @@ fn setup(
         perceptual_roughness: 0.55,
         ..default()
     });
-    let chair_back_mesh = meshes.add(Cuboid::new(1.5, 1.2, 0.12));
-    let chair_post_mesh = meshes.add(Cylinder::new(0.07, 2.4));
+    let chair_back_mesh = meshes.add(Cuboid::new(1.9, 1.3, 0.14));
+    let chair_post_mesh = meshes.add(Cylinder::new(0.08, 2.6));
 
     // Shared meshes/materials for chips and soft "blob" shadows.
     let disc = meshes.add(Cylinder::new(1.0, 1.0)); // reused, scaled per use
@@ -607,12 +827,15 @@ fn setup(
         let x = angle.cos() * prx;
         let z = angle.sin() * prz;
 
-        // A chair behind each player: a leather backrest on two posts, facing
-        // the table so it reads as the seat they're sitting in.
-        let cback = Vec3::new(angle.cos() * (prx + 0.5), floor_y + 2.0, angle.sin() * (prz + 0.7));
-        let yaw = (-angle.cos()).atan2(-angle.sin());
-        let crot = Quat::from_rotation_y(yaw);
+        // A chair behind each player: a leather backrest on two posts. It's
+        // placed directly behind the standee *as seen from the camera* and
+        // turned to face the camera, so the flat billboard never clips through
+        // it and the chair's edges peek out at the sides.
+        let to_cam = Vec2::new(cam_pos.x - x, cam_pos.z - z).normalize();
+        let cyaw = to_cam.x.atan2(to_cam.y);
+        let crot = Quat::from_rotation_y(cyaw);
         let cright = crot * Vec3::X;
+        let cback = Vec3::new(x - to_cam.x * 0.55, floor_y + 2.0, z - to_cam.y * 0.55);
         commands.spawn((
             Mesh3d(chair_back_mesh.clone()),
             MeshMaterial3d(chair_leather.clone()),
@@ -623,7 +846,7 @@ fn setup(
                 Mesh3d(chair_post_mesh.clone()),
                 MeshMaterial3d(chair_wood.clone()),
                 Transform::from_translation(
-                    Vec3::new(cback.x, floor_y + 1.3, cback.z) + cright * (0.66 * s),
+                    Vec3::new(cback.x, floor_y + 1.3, cback.z) + cright * (0.84 * s),
                 )
                 .with_rotation(crot),
             ));
@@ -653,6 +876,13 @@ fn setup(
                 base,
                 base_scale: Vec3::ONE,
                 seed: i as f32 * 1.7 + 0.3,
+                yaw_offset: if i == 0 {
+                    0.16
+                } else if i + 1 == count {
+                    -0.16
+                } else {
+                    0.0
+                },
             },
             Name::new(c.name),
         ));
@@ -808,6 +1038,8 @@ fn setup(
         ..default()
     });
     let cig_mesh = meshes.add(Cylinder::new(0.028, 0.62));
+    let smoke_tex = asset_server.load("smoke.png");
+    let smoke_quad = meshes.add(Rectangle::new(1.0, 1.0));
     for (sx, ang) in [(-0.18_f32, 0.5_f32), (0.16, -0.7)] {
         let rot = Quat::from_rotation_y(ang) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
         let base = Vec3::new(ash_x + sx, felt_top + 0.08, ash_z);
@@ -826,12 +1058,68 @@ fn setup(
             NotShadowCaster,
         ));
         // glowing ember at the far tip
+        let ember = base + dir * 0.33;
         commands.spawn((
             Mesh3d(meshes.add(Cylinder::new(0.028, 0.05))),
             MeshMaterial3d(cig_ember.clone()),
-            Transform::from_translation(base + dir * 0.33).with_rotation(rot),
+            Transform::from_translation(ember).with_rotation(rot),
             NotShadowCaster,
         ));
+        // a column of drifting smoke puffs rising from the ember (animated)
+        let origin = Vec3::new(ember.x, felt_top + 0.14, ember.z);
+        for p in 0..5 {
+            let smat = materials.add(StandardMaterial {
+                base_color: Color::srgba(0.72, 0.76, 0.82, 0.0),
+                base_color_texture: Some(smoke_tex.clone()),
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            });
+            commands.spawn((
+                Mesh3d(smoke_quad.clone()),
+                MeshMaterial3d(smat),
+                Transform::from_translation(origin),
+                NotShadowCaster,
+                Smoke {
+                    origin,
+                    phase: p as f32 * 0.2 + sx.abs(),
+                    speed: 0.22,
+                },
+            ));
+        }
+    }
+}
+
+/// Animate the cigarette smoke: each puff rises, sways, grows and fades on a
+/// loop, billboarding to face the camera.
+fn smoke_system(
+    time: Res<Time>,
+    camera: Query<&Transform, (With<Camera3d>, Without<Smoke>)>,
+    mut puffs: Query<(&Smoke, &mut Transform, &MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let Some(cam) = camera.iter().next() else {
+        return;
+    };
+    let cam_pos = cam.translation;
+    let t = time.elapsed_secs();
+    for (s, mut tr, mat) in &mut puffs {
+        let life = (t * s.speed + s.phase).fract(); // 0..1
+        let rise = life * 1.5;
+        let sway = (life * 7.0 + s.phase * 6.0).sin() * 0.12 * life;
+        let pos = s.origin + Vec3::new(sway, rise, 0.0);
+        tr.translation = pos;
+        // billboard to camera, then size it (growing as it rises)
+        let target = Vec3::new(cam_pos.x, pos.y, cam_pos.z);
+        tr.look_at(target, Vec3::Y);
+        tr.scale = Vec3::splat(0.08 + life * 0.42);
+        // fade in then out across the lifetime
+        let alpha = (life * std::f32::consts::PI).sin() * 0.52;
+        if let Some(m) = materials.get_mut(&mat.0) {
+            m.base_color = Color::srgba(0.72, 0.76, 0.82, alpha);
+        }
     }
 }
 
@@ -867,6 +1155,7 @@ fn standee_system(
         t.look_at(target, Vec3::Y);
 
         // A tiny lean + scale pulse on top of the facing rotation.
+        t.rotate_local_y(s.yaw_offset);
         t.rotate_local_z(nlean * 0.005);
         t.scale = s.base_scale * (1.0 + nsc * 0.004);
     }
