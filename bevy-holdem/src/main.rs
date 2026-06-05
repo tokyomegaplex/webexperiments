@@ -118,10 +118,10 @@ fn setup(
         Msaa::Off,
         DepthPrepass,
         DepthOfField {
-            mode: DepthOfFieldMode::Bokeh,
+            mode: DepthOfFieldMode::Gaussian,
             focal_distance: 13.0,
-            aperture_f_stops: 2.2,
-            max_circle_of_confusion_diameter: 32.0,
+            aperture_f_stops: 1.4,
+            max_circle_of_confusion_diameter: 45.0,
             max_depth: 60.0,
             ..default()
         },
@@ -132,7 +132,7 @@ fn setup(
             color: Color::srgb(0.78, 0.82, 1.0),
             // Lower ambient darkens the room generally; the foreground is then
             // lifted by a dedicated front fill so the players stay bright/crisp.
-            brightness: 190.0,
+            brightness: 110.0,
             ..default()
         },
     ));
@@ -141,7 +141,9 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(1.0, 0.96, 0.88),
-            illuminance: 3500.0,
+            // Dialed down: this global key also lit the back bar. The foreground
+            // is carried by the range-limited point light over the table.
+            illuminance: 1900.0,
             shadows_enabled: true,
             ..default()
         },
@@ -173,9 +175,9 @@ fn setup(
     // bar too (everything there faces the camera).
     commands.spawn((
         PointLight {
-            intensity: 1_700_000.0,
+            intensity: 2_300_000.0,
             color: Color::srgb(1.0, 0.95, 0.86),
-            range: 13.0,
+            range: 14.0,
             shadows_enabled: false,
             ..default()
         },
@@ -488,28 +490,30 @@ fn setup(
     ));
     // bottles: muted glass, varied sizes, each with a small paper label.
     let bottle_cols = [
-        Color::srgb_u8(40, 66, 46),    // dark green
-        Color::srgb_u8(74, 50, 30),    // brown
-        Color::srgb_u8(120, 124, 118), // smoke / clear
-        Color::srgb_u8(96, 66, 30),    // amber
-        Color::srgb_u8(70, 42, 40),    // dark red-brown
+        Color::srgb_u8(26, 43, 30), // dark green
+        Color::srgb_u8(48, 33, 20), // brown
+        Color::srgb_u8(78, 80, 76), // smoke / clear
+        Color::srgb_u8(62, 43, 20), // amber
+        Color::srgb_u8(46, 27, 26), // dark red-brown
     ];
     let bottle_mats: Vec<_> = bottle_cols
         .iter()
         .map(|c| {
             materials.add(StandardMaterial {
                 base_color: *c,
-                perceptual_roughness: 0.22,
-                reflectance: 0.5,
+                perceptual_roughness: 0.3,
+                reflectance: 0.3,
                 ..default()
             })
         })
         .collect();
     let label_mat = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
+        // Lit (not unlit) so the labels go dark with the dim bar instead of
+        // staying bright cream specks.
+        base_color: Color::srgb(0.7, 0.7, 0.7),
         base_color_texture: Some(asset_server.load("label.png")),
         alpha_mode: AlphaMode::Blend,
-        unlit: true,
+        perceptual_roughness: 0.9,
         ..default()
     });
     // Deterministic PRNG so the clutter is randomized but stable across runs.
@@ -558,9 +562,9 @@ fn setup(
     // than the brighter foreground)
     commands.spawn((
         PointLight {
-            intensity: 150_000.0,
-            color: Color::srgb(1.0, 0.72, 0.44),
-            range: 13.0,
+            intensity: 70_000.0,
+            color: Color::srgb(1.0, 0.7, 0.42),
+            range: 12.0,
             shadows_enabled: false,
             ..default()
         },
