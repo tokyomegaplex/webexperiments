@@ -8,11 +8,14 @@
 //! The poker rules + AI + betting UI are the next phase; this proves the 3D
 //! approach and the art pipeline. Run with `cargo run` (see README).
 
+use bevy::anti_alias::fxaa::Fxaa;
+use bevy::core_pipeline::prepass::DepthPrepass;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
 use bevy::post_process::bloom::Bloom;
+use bevy::post_process::dof::{DepthOfField, DepthOfFieldMode};
 use bevy::render::view::Hdr;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
@@ -109,10 +112,27 @@ fn setup(
         Hdr,
         Tonemapping::None,
         Bloom { intensity: 0.14, ..Bloom::NATURAL },
+        // Depth of field: the table + players stay crisp, the bar/pictures
+        // behind them fall out of focus. Needs a depth prepass, and the DOF
+        // pass only runs with MSAA disabled.
+        Msaa::Off,
+        DepthPrepass,
+        DepthOfField {
+            mode: DepthOfFieldMode::Bokeh,
+            focal_distance: 13.0,
+            aperture_f_stops: 2.2,
+            max_circle_of_confusion_diameter: 32.0,
+            max_depth: 60.0,
+            ..default()
+        },
+        // FXAA keeps the in-focus foreground smooth (MSAA must be off for DOF).
+        Fxaa::default(),
         Transform::from_translation(cam_pos).looking_at(Vec3::new(0.0, 1.8, -2.0), Vec3::Y),
         AmbientLight {
             color: Color::srgb(0.78, 0.82, 1.0),
-            brightness: 280.0,
+            // Lower ambient darkens the room generally; the foreground is then
+            // lifted by a dedicated front fill so the players stay bright/crisp.
+            brightness: 190.0,
             ..default()
         },
     ));
@@ -147,16 +167,19 @@ fn setup(
         },
         Transform::from_xyz(0.0, 7.5, -11.0).looking_at(Vec3::new(0.0, 2.6, 3.0), Vec3::Y),
     ));
-    // Front fill from the camera side: brightens the players (who face the
-    // camera) and the foreground felt without lifting the moody back bar much.
+    // Foreground key: a range-limited point light over the table. It lifts the
+    // players and felt but falls off before the bar (15m+ away), so the
+    // background stays dark — unlike a directional fill, which would light the
+    // bar too (everything there faces the camera).
     commands.spawn((
-        DirectionalLight {
-            color: Color::srgb(1.0, 0.95, 0.88),
-            illuminance: 2300.0,
+        PointLight {
+            intensity: 1_700_000.0,
+            color: Color::srgb(1.0, 0.95, 0.86),
+            range: 13.0,
             shadows_enabled: false,
             ..default()
         },
-        Transform::from_xyz(0.0, 5.5, 11.0).looking_at(Vec3::new(0.0, 2.0, -3.0), Vec3::Y),
+        Transform::from_xyz(0.0, 5.0, 4.0),
     ));
     // Warm hanging lamp casting a pool of light onto the felt (the mood key).
     // Kept below clipping so the felt centre doesn't blow out to white.
@@ -391,10 +414,9 @@ fn setup(
 
     // --- framed pictures on the back wall, up above the bar (gilt + unlit) ---
     let frame_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb_u8(150, 116, 52),
-        emissive: LinearRgba::rgb(0.06, 0.05, 0.02),
+        base_color: Color::srgb_u8(110, 84, 38),
         metallic: 0.8,
-        perceptual_roughness: 0.35,
+        perceptual_roughness: 0.4,
         ..default()
     });
     // (art, width, height, x, y) on the back wall (faces +Z toward the room)
@@ -415,7 +437,8 @@ fn setup(
         commands.spawn((
             Mesh3d(meshes.add(Rectangle::new(w, h))),
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::WHITE,
+                // Dim the art so the background recedes behind the players.
+                base_color: Color::srgb(0.45, 0.45, 0.45),
                 base_color_texture: Some(asset_server.load(art)),
                 unlit: true,
                 ..default()
@@ -427,8 +450,8 @@ fn setup(
     // --- background bar: a back cabinet, a counter, and rows of bottles ---
     let bar_z = -11.5;
     let dark_wood = materials.add(StandardMaterial {
-        base_color: Color::srgb_u8(34, 22, 16),
-        perceptual_roughness: 0.7,
+        base_color: Color::srgb_u8(24, 16, 12),
+        perceptual_roughness: 0.8,
         ..default()
     });
     // tall back cabinet
@@ -535,9 +558,9 @@ fn setup(
     // than the brighter foreground)
     commands.spawn((
         PointLight {
-            intensity: 420_000.0,
-            color: Color::srgb(1.0, 0.78, 0.5),
-            range: 15.0,
+            intensity: 150_000.0,
+            color: Color::srgb(1.0, 0.72, 0.44),
+            range: 13.0,
             shadows_enabled: false,
             ..default()
         },
