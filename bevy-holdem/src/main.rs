@@ -132,7 +132,7 @@ fn setup(
             color: Color::srgb(0.78, 0.82, 1.0),
             // Lower ambient darkens the room generally; the foreground is then
             // lifted by a dedicated front fill so the players stay bright/crisp.
-            brightness: 110.0,
+            brightness: 70.0,
             ..default()
         },
     ));
@@ -879,11 +879,21 @@ fn setup(
             ));
         }
 
+        let tex = asset_server.load(c.file);
         let material = materials.add(StandardMaterial {
-            // White base so the PNG shows its true colors (no tint); now lit so
-            // the standees sit in the scene's lighting (the lamp pool).
+            // White base so the PNG shows its true colors (no tint).
             base_color: Color::WHITE,
-            base_color_texture: Some(asset_server.load(c.file)),
+            base_color_texture: Some(tex.clone()),
+            // Self-light the art so the flat cartoon colours read true and vivid
+            // (not washed out) even as the room is dim. Transparent pixels are
+            // black in the source PNGs, so this adds no halo.
+            emissive: LinearRgba::rgb(0.7, 0.7, 0.7),
+            emissive_texture: Some(tex),
+            // Fully matte, zero specular: kills the grey sheen that was lifting
+            // dark areas (e.g. the inside of Hoodguy's hood) to grey.
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
+            metallic: 0.0,
             alpha_mode: AlphaMode::Blend,
             double_sided: true,
             cull_mode: None,
