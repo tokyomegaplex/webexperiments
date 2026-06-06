@@ -19,6 +19,7 @@ use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use std::env;
 
 mod characters;
+mod poker;
 use characters::roster;
 
 /// A character standee: always faces the camera (yaw only) and gets a subtle,
