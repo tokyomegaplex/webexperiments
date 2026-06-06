@@ -8,14 +8,11 @@
 //! The poker rules + AI + betting UI are the next phase; this proves the 3D
 //! approach and the art pipeline. Run with `cargo run` (see README).
 
-use bevy::anti_alias::fxaa::Fxaa;
-use bevy::core_pipeline::prepass::DepthPrepass;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
 use bevy::post_process::bloom::Bloom;
-use bevy::post_process::dof::{DepthOfField, DepthOfFieldMode};
 use bevy::render::view::Hdr;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
@@ -112,21 +109,20 @@ fn setup(
         Hdr,
         Tonemapping::None,
         Bloom { intensity: 0.14, ..Bloom::NATURAL },
-        // Depth of field: the table + players stay crisp, the bar/pictures
-        // behind them fall out of focus. Needs a depth prepass, and the DOF
-        // pass only runs with MSAA disabled.
-        Msaa::Off,
-        DepthPrepass,
-        DepthOfField {
-            mode: DepthOfFieldMode::Gaussian,
-            focal_distance: 13.0,
-            aperture_f_stops: 1.4,
-            max_circle_of_confusion_diameter: 45.0,
-            max_depth: 60.0,
+        // Atmospheric distance fog: the table + players stay clear, while the
+        // bar and wall pictures fade into soft dark haze with distance, so the
+        // background recedes behind the crisp foreground. (Reliable on every
+        // GPU, unlike the post-process depth-of-field pass.)
+        DistanceFog {
+            color: Color::srgb(0.04, 0.045, 0.06),
+            // Players sit ~15 units out (kept clear); the bar (~22) and wall
+            // pictures (~24) ramp into haze so they recede behind the foreground.
+            falloff: FogFalloff::Linear {
+                start: 16.0,
+                end: 25.0,
+            },
             ..default()
         },
-        // FXAA keeps the in-focus foreground smooth (MSAA must be off for DOF).
-        Fxaa::default(),
         Transform::from_translation(cam_pos).looking_at(Vec3::new(0.0, 1.8, -2.0), Vec3::Y),
         AmbientLight {
             color: Color::srgb(0.78, 0.82, 1.0),
