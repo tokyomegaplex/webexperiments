@@ -16,11 +16,13 @@ use bevy::post_process::bloom::Bloom;
 use bevy::render::view::Hdr;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+use std::collections::HashMap;
 use std::env;
 
 mod characters;
 mod poker;
 use characters::roster;
+use poker::{ai_decide, Action, Game, Player, Street};
 
 /// A character standee: always faces the camera (yaw only) and gets a subtle,
 /// stepped (~12fps) noise wobble so it feels hand-animated / alive.
@@ -42,6 +44,53 @@ struct Smoke {
     speed: f32,
 }
 
+/// Tags an entity that is spawned from the poker engine state and re-created
+/// whenever the table is redrawn (cards, chips, the dealer button).
+#[derive(Component)]
+struct TableProp;
+
+/// The HUD text node (street / pot / players / last action).
+#[derive(Component)]
+struct HudText;
+
+/// The live poker game plus the geometry it needs to lay itself out.
+#[derive(Resource)]
+struct Poker {
+    game: Game,
+    /// World-space table angle (radians) for each seat: seat 0 is the human at
+    /// the front; seats 1.. are the AI standees around the back.
+    seat_angles: Vec<f32>,
+    rx: f32,
+    rz: f32,
+    felt_top: f32,
+    /// Time between AI actions, and the pause shown after a hand ends.
+    act_timer: Timer,
+    over_timer: Timer,
+    waiting_next: bool,
+    /// When true the auto-play loop is frozen (used for deterministic
+    /// screenshots so the captured frame matches the prepared state).
+    paused: bool,
+    log: String,
+}
+
+/// Shared meshes/materials the redraw system uses for cards and chips.
+#[derive(Resource)]
+struct PokerAssets {
+    card_quad: Handle<Mesh>,
+    chip_mesh: Handle<Mesh>,
+    card_back: Handle<StandardMaterial>,
+    button_mat: Handle<StandardMaterial>,
+    chip_mats: Vec<Handle<StandardMaterial>>,
+}
+
+/// Card-face materials, cached by code ("As") so we don't leak one per redraw.
+#[derive(Resource, Default)]
+struct CardFaces(HashMap<String, Handle<StandardMaterial>>);
+
+/// Set true after the game state changes; the redraw system rebuilds the props.
+#[derive(Resource)]
+struct NeedsRedraw(bool);
+
 /// When SCREENSHOT=<path> is set, the app renders a few frames, saves a PNG to
 /// that path, and exits — used for automated visual checks (headless via Xvfb).
 #[derive(Resource)]
@@ -61,8 +110,14 @@ fn main() {
         ..default()
     }))
     .insert_resource(ClearColor(Color::srgb(0.04, 0.06, 0.07)))
+    .insert_resource(build_poker())
+    .insert_resource(NeedsRedraw(true))
+    .init_resource::<CardFaces>()
     .add_systems(Startup, setup)
-    .add_systems(Update, (standee_system, smoke_system));
+    .add_systems(
+        Update,
+        (standee_system, smoke_system, auto_play, redraw_table, hud),
+    );
 
     if let Ok(path) = env::var("SCREENSHOT") {
         app.insert_resource(ShotState { path, frame: 0 })
@@ -70,6 +125,79 @@ fn main() {
     }
 
     app.run();
+}
+
+/// Build the initial game: human in seat 0 (front), the 5 AI characters around
+/// the back, 1000-chip stacks, 5/10 blinds. Seeded for reproducibility.
+fn build_poker() -> Poker {
+    let rx = 5.4_f32;
+    let rz = 3.9_f32;
+    let cast = roster();
+
+    let mut players = vec![Player::new("You", 1000, true, [0.5, 0.5, 0.2, 0.2])];
+    for c in &cast {
+        players.push(Player::new(c.name, 1000, false, c.profile));
+    }
+
+    // Seat angles: human at the front (+z, toward the camera), AI spread across
+    // the far half (matching the standee placement in `setup`).
+    let mut seat_angles = vec![90.0_f32.to_radians()];
+    let count = cast.len().max(1);
+    for i in 0..cast.len() {
+        let deg = 200.0 + 140.0 * i as f32 / (count as f32 - 1.0).max(1.0);
+        seat_angles.push(deg.to_radians());
+    }
+
+    let seed = if env::var("SCREENSHOT").is_ok() {
+        7 // deterministic state for visual checks
+    } else {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1)
+    };
+
+    let mut game = Game::new(players, 5, 10, seed);
+    game.start_hand();
+
+    // For screenshots, fast-forward until a flop is on the table (dealing fresh
+    // hands past any preflop fold-outs) so the captured frame shows community
+    // cards, multiple hole cards, and a real pot.
+    if env::var("SCREENSHOT").is_ok() {
+        let mut steps = 0;
+        while game.community.len() < 3 && steps < 400 {
+            if game.street == Street::HandOver {
+                game.start_hand();
+            } else {
+                let seat = game.to_act;
+                let action = ai_decide(&mut game, seat);
+                game.apply(action);
+            }
+            steps += 1;
+        }
+        // A couple of postflop actions for some chips out on the flop.
+        for _ in 0..2 {
+            if game.street == Street::HandOver {
+                break;
+            }
+            let seat = game.to_act;
+            let action = ai_decide(&mut game, seat);
+            game.apply(action);
+        }
+    }
+
+    Poker {
+        game,
+        seat_angles,
+        rx,
+        rz,
+        felt_top: 1.15,
+        act_timer: Timer::from_seconds(0.9, TimerMode::Repeating),
+        over_timer: Timer::from_seconds(3.0, TimerMode::Once),
+        waiting_next: false,
+        paused: env::var("SCREENSHOT").is_ok(),
+        log: "New hand".to_string(),
+    }
 }
 
 fn screenshot_system(mut state: ResMut<ShotState>, mut commands: Commands) {
@@ -782,23 +910,6 @@ fn setup(
             ..default()
         }))
         .collect();
-    let card_y = felt_top + 0.02;
-
-    // Spawn a small stack of `n` chips centered at (x, z). Every 4th chip uses
-    // a contrasting colour so the stacks read as banded denominations.
-    let chip_stack = |commands: &mut Commands, x: f32, z: f32, n: usize, mat: usize| {
-        let base = mat % chip_mats.len();
-        let accent = (mat + 2) % chip_mats.len();
-        for k in 0..n {
-            let m = if k % 4 == 3 { &chip_mats[accent] } else { &chip_mats[base] };
-            commands.spawn((
-                Mesh3d(disc.clone()),
-                MeshMaterial3d(m.clone()),
-                Transform::from_xyz(x, card_y + 0.022 + k as f32 * 0.045, z)
-                    .with_scale(Vec3::new(0.24, 0.04, 0.24)),
-            ));
-        }
-    };
 
     // --- cup-holders recessed into the padded rail (gold rim + dark hole) ---
     let holder_y = felt_top - 0.045;
@@ -929,12 +1040,6 @@ fn setup(
                 .with_scale(Vec3::new(1.7, 0.02, 1.1)),
         ));
 
-        // This player's chip stacks, just inside the rail in front of them.
-        let cxp = angle.cos() * rx * 0.64;
-        let czp = angle.sin() * rz * 0.64;
-        chip_stack(&mut commands, cxp, czp, 4 + i % 3, i);
-        chip_stack(&mut commands, cxp + 0.32, czp + 0.04, 3 + i % 2, (i + 2) % 5);
-
         // Name plate floating above the head, facing the camera (front side
         // toward the camera so the text isn't mirrored).
         let plate_mat = materials.add(StandardMaterial {
@@ -958,69 +1063,42 @@ fn setup(
         ));
     }
 
-    // --- the pot, in the middle: a banded mound of varied stacks ---
-    chip_stack(&mut commands, -0.3, 0.5, 8, 0);
-    chip_stack(&mut commands, 0.12, 0.56, 6, 1);
-    chip_stack(&mut commands, -0.08, 0.18, 5, 3);
-    chip_stack(&mut commands, 0.34, 0.26, 4, 4);
-    chip_stack(&mut commands, -0.42, 0.16, 3, 2);
-
-    // --- dealer button, lying flat on the felt near a player ---
-    commands.spawn((
-        Mesh3d(disc.clone()),
-        MeshMaterial3d(materials.add(StandardMaterial {
+    // --- poker: shared card/chip assets used by the redraw system ---
+    // (The pot, bets, community + hole cards, and dealer button are now spawned
+    // dynamically from the engine state — see `redraw_table`.)
+    commands.insert_resource(PokerAssets {
+        card_quad: meshes.add(Rectangle::new(0.78, 1.08)),
+        chip_mesh: disc.clone(),
+        card_back: materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(150, 40, 52),
+            perceptual_roughness: 0.5,
+            ..default()
+        }),
+        button_mat: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: Some(asset_server.load("button_d.png")),
             alpha_mode: AlphaMode::Blend,
             unlit: true,
             ..default()
-        })),
-        Transform::from_xyz(-1.7, card_y + 0.01, 1.0)
-            .with_scale(Vec3::new(0.34, 0.04, 0.34)),
-    ));
-
-    // --- community cards on the felt (flat quads with real face textures) ---
-    let card_face_quad = meshes.add(Rectangle::new(0.78, 1.08));
-    // Lie flat (face up), top edge toward the camera so ranks read right-side-up.
-    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
-        * Quat::from_rotation_z(std::f32::consts::PI);
-    let faces = ["cards/As.png", "cards/Kh.png", "cards/Qd.png", "cards/Jc.png", "cards/Ts.png"];
-    for (i, face) in faces.iter().enumerate() {
-        let x = (i as f32 - 2.0) * 0.88;
-        let m = materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            base_color_texture: Some(asset_server.load(*face)),
-            perceptual_roughness: 0.5,
-            ..default()
-        });
-        commands.spawn((
-            Mesh3d(card_face_quad.clone()),
-            MeshMaterial3d(m),
-            Transform::from_xyz(x, card_y, -0.6).with_rotation(flat),
-        ));
-    }
-
-    // --- the human's two hole cards (face down), near the front edge ---
-    let card = meshes.add(Cuboid::new(0.72, 0.04, 1.02));
-    let card_back_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb_u8(150, 40, 52),
-        perceptual_roughness: 0.5,
-        ..default()
+        }),
+        chip_mats: chip_mats.clone(),
     });
-    for i in 0..2 {
-        let x = (i as f32 - 0.5) * 0.84;
-        commands.spawn((
-            Mesh3d(card.clone()),
-            MeshMaterial3d(card_back_mat.clone()),
-            Transform::from_xyz(x, card_y, 2.7),
-        ));
-    }
 
-    // --- burn card: a lone face-down card beside the flop ---
+    // --- HUD overlay (street / pot / players / last action) ---
     commands.spawn((
-        Mesh3d(card.clone()),
-        MeshMaterial3d(card_back_mat.clone()),
-        Transform::from_xyz(-2.75, card_y, -0.6).with_rotation(Quat::from_rotation_y(0.14)),
+        Text::new("dealing..."),
+        TextFont {
+            font_size: 18.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.95, 0.95, 0.9)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        HudText,
     ));
 
     // --- ashtray with two cigarettes, off to the back-right of the felt ---
@@ -1199,4 +1277,242 @@ fn standee_system(
 fn hash11(x: f32) -> f32 {
     let v = (x * 127.1).sin() * 43758.5453;
     (v - v.floor()).abs()
+}
+
+// ===========================================================================
+// Poker: auto-play loop, table redraw from engine state, and the HUD.
+// ===========================================================================
+
+/// Drive the table with the AI: one action every `act_timer`, then a pause and
+/// a fresh deal once the hand is over.
+fn auto_play(time: Res<Time>, mut poker: ResMut<Poker>, mut needs: ResMut<NeedsRedraw>) {
+    if poker.paused {
+        return;
+    }
+    let dt = time.delta();
+    if poker.game.street == Street::HandOver {
+        if !poker.waiting_next {
+            poker.over_timer.reset();
+            poker.waiting_next = true;
+        }
+        if poker.over_timer.tick(dt).is_finished() {
+            poker.waiting_next = false;
+            poker.game.start_hand();
+            poker.log = "New hand".to_string();
+            needs.0 = true;
+        }
+        return;
+    }
+
+    if poker.act_timer.tick(dt).just_finished() {
+        let seat = poker.game.to_act;
+        let action = ai_decide(&mut poker.game, seat);
+        let name = poker.game.players[seat].name.clone();
+        let desc = describe_action(&poker.game, seat, action);
+        poker.game.apply(action);
+        poker.log = format!("{name} {desc}");
+        needs.0 = true;
+    }
+}
+
+fn describe_action(game: &Game, seat: usize, action: Action) -> String {
+    match action {
+        Action::Fold => "folds".to_string(),
+        Action::Check | Action::Call => {
+            let amt = game.call_amount(seat);
+            if amt == 0 {
+                "checks".to_string()
+            } else {
+                format!("calls ${amt}")
+            }
+        }
+        Action::Raise(to) => format!("raises to ${to}"),
+    }
+}
+
+/// Rebuild all engine-driven props (cards, chips, dealer button) from the
+/// current game state whenever something changed.
+fn redraw_table(
+    mut commands: Commands,
+    mut needs: ResMut<NeedsRedraw>,
+    poker: Res<Poker>,
+    assets: Res<PokerAssets>,
+    mut faces: ResMut<CardFaces>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+    props: Query<Entity, With<TableProp>>,
+) {
+    if !needs.0 {
+        return;
+    }
+    needs.0 = false;
+    for e in &props {
+        commands.entity(e).despawn();
+    }
+
+    let g = &poker.game;
+    let ft = poker.felt_top;
+    // Lie flat, face up, top edge toward the camera so ranks read right-side-up.
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+        * Quat::from_rotation_z(std::f32::consts::PI);
+
+    // Community cards, centred.
+    let c = g.community.len() as f32;
+    for (i, card) in g.community.iter().enumerate() {
+        let x = (i as f32 - (c - 1.0) / 2.0) * 0.9;
+        let mat = face_material(&mut faces, &mut materials, &asset_server, &card.code());
+        commands.spawn((
+            Mesh3d(assets.card_quad.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(x, ft + 0.02, -0.7).with_rotation(flat),
+            TableProp,
+        ));
+    }
+
+    // The collected pot (everything except the current street's live bets).
+    let live_bets: u32 = g.players.iter().map(|p| p.bet).sum();
+    let collected = g.pot().saturating_sub(live_bets);
+    if collected > 0 {
+        spawn_chips(&mut commands, &assets, 0.0, 0.9, ft, collected, 3);
+    }
+
+    // Per-seat: bets, hole cards, dealer button.
+    for (s, p) in g.players.iter().enumerate() {
+        let a = poker.seat_angles[s];
+        let (cosv, sinv) = (a.cos(), a.sin());
+
+        if p.bet > 0 {
+            let bx = cosv * poker.rx * 0.5;
+            let bz = sinv * poker.rz * 0.5;
+            spawn_chips(&mut commands, &assets, bx, bz, ft, p.bet, s);
+        }
+
+        if p.in_hand() {
+            let hx = cosv * poker.rx * 0.72;
+            let hz = sinv * poker.rz * 0.72;
+            let (tx, tz) = (-sinv, cosv); // tangent, to lay the two cards side by side
+            let reveal = p.is_human || g.street == Street::HandOver;
+            for (k, card) in p.hole.iter().enumerate() {
+                let off = (k as f32 - 0.5) * 0.46;
+                let mat = if reveal {
+                    face_material(&mut faces, &mut materials, &asset_server, &card.code())
+                } else {
+                    assets.card_back.clone()
+                };
+                commands.spawn((
+                    Mesh3d(assets.card_quad.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_xyz(hx + tx * off, ft + 0.02, hz + tz * off)
+                        .with_rotation(flat)
+                        .with_scale(Vec3::splat(0.78)),
+                    TableProp,
+                ));
+            }
+        }
+    }
+
+    // Dealer button next to the button seat.
+    let a = poker.seat_angles[g.button];
+    commands.spawn((
+        Mesh3d(assets.chip_mesh.clone()),
+        MeshMaterial3d(assets.button_mat.clone()),
+        Transform::from_xyz(a.cos() * poker.rx * 0.6, ft + 0.02, a.sin() * poker.rz * 0.6)
+            .with_scale(Vec3::new(0.34, 0.04, 0.34)),
+        TableProp,
+    ));
+}
+
+fn face_material(
+    faces: &mut CardFaces,
+    materials: &mut Assets<StandardMaterial>,
+    asset_server: &AssetServer,
+    code: &str,
+) -> Handle<StandardMaterial> {
+    if let Some(h) = faces.0.get(code) {
+        return h.clone();
+    }
+    let h = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(asset_server.load(format!("cards/{code}.png"))),
+        perceptual_roughness: 0.5,
+        ..default()
+    });
+    faces.0.insert(code.to_string(), h.clone());
+    h
+}
+
+/// A small banded chip stack whose height scales with the chip amount.
+fn spawn_chips(
+    commands: &mut Commands,
+    assets: &PokerAssets,
+    x: f32,
+    z: f32,
+    felt_top: f32,
+    amount: u32,
+    color: usize,
+) {
+    let n = ((amount as f32).sqrt() * 0.7).round().clamp(1.0, 16.0) as usize;
+    let base = color % assets.chip_mats.len();
+    let accent = (color + 2) % assets.chip_mats.len();
+    for k in 0..n {
+        let mat = if k % 4 == 3 {
+            assets.chip_mats[accent].clone()
+        } else {
+            assets.chip_mats[base].clone()
+        };
+        commands.spawn((
+            Mesh3d(assets.chip_mesh.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(x, felt_top + 0.022 + k as f32 * 0.045, z)
+                .with_scale(Vec3::new(0.24, 0.04, 0.24)),
+            TableProp,
+        ));
+    }
+}
+
+/// Update the HUD text every frame from the game state.
+fn hud(poker: Res<Poker>, mut q: Query<&mut Text, With<HudText>>) {
+    let g = &poker.game;
+    let mut s = format!("{}    Pot ${}\n\n", street_name(g.street), g.pot());
+    for (i, p) in g.players.iter().enumerate() {
+        let turn = if i == g.to_act && g.street != Street::HandOver {
+            ">"
+        } else {
+            " "
+        };
+        let dealer = if i == g.button { " (D)" } else { "" };
+        let status = if p.folded {
+            "  folded"
+        } else if p.all_in {
+            "  all-in"
+        } else {
+            ""
+        };
+        let bet = if p.bet > 0 {
+            format!("  bet ${}", p.bet)
+        } else {
+            String::new()
+        };
+        s += &format!("{turn} {:<9} ${:<5}{bet}{dealer}{status}\n", p.name, p.stack);
+    }
+    s += &format!("\n{}", poker.log);
+    if g.street == Street::HandOver {
+        for pay in &g.last_payouts {
+            s += &format!("\n{} wins ${}", g.players[pay.seat].name, pay.amount);
+        }
+    }
+    for mut text in &mut q {
+        *text = Text::new(s.clone());
+    }
+}
+
+fn street_name(s: Street) -> &'static str {
+    match s {
+        Street::Preflop => "Preflop",
+        Street::Flop => "Flop",
+        Street::Turn => "Turn",
+        Street::River => "River",
+        Street::Showdown => "Showdown",
+        Street::HandOver => "Hand over",
+    }
 }
