@@ -34,7 +34,20 @@ struct Standee {
     /// Extra yaw applied after facing the camera (turns the end seats slightly
     /// inward so they sit naturally in their chairs).
     yaw_offset: f32,
+    /// Game seat index this standee represents.
+    seat: usize,
+    /// 0 = seated, ramps to 1 as a busted player walks away from the table.
+    walk: f32,
 }
+
+/// Tags a per-seat scene visual (name plate) so it can be hidden when the
+/// player busts and leaves.
+#[derive(Component)]
+struct SeatVisual(usize);
+
+/// Tags one of the two bottom-left UI hole-card images for the human.
+#[derive(Component)]
+struct HoleCardUi(usize);
 
 /// A drifting cigarette-smoke puff: rises, sways, grows and fades on a loop.
 #[derive(Component)]
@@ -138,6 +151,8 @@ fn main() {
             redraw_table,
             hud,
             money_labels,
+            human_cards_ui,
+            seat_visibility,
         ),
     );
 
@@ -1048,6 +1063,8 @@ fn setup(
                 } else {
                     0.0
                 },
+                seat: i + 1,
+                walk: 0.0,
             },
             Name::new(c.name),
         ));
@@ -1080,6 +1097,7 @@ fn setup(
             MeshMaterial3d(plate_mat),
             Transform::from_translation(plate_pos).looking_at(away, Vec3::Y),
             NotShadowCaster,
+            SeatVisual(i + 1),
         ));
     }
 
@@ -1165,6 +1183,25 @@ fn setup(
         },
         HudText,
     ));
+
+    // Your two hole cards, drawn flat in the bottom-left corner (2D overlay).
+    for k in 0..2 {
+        commands.spawn((
+            ImageNode {
+                image: asset_server.load("cards/back.png"),
+                ..default()
+            },
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(22.0 + k as f32 * 86.0),
+                bottom: Val::Px(20.0),
+                width: Val::Px(112.0),
+                height: Val::Px(156.0),
+                ..default()
+            },
+            HoleCardUi(k),
+        ));
+    }
 
     // --- ashtray with two cigarettes, off to the back-right of the felt ---
     let ash_x = 3.0;
@@ -1305,8 +1342,9 @@ fn smoke_system(
 /// standees feel hand-animated / "boiling" like stop-motion, not dead-still.
 fn standee_system(
     time: Res<Time>,
+    poker: Res<Poker>,
     camera: Query<&Transform, (With<Camera3d>, Without<Standee>)>,
-    mut standees: Query<(&Standee, &mut Transform)>,
+    mut standees: Query<(&mut Standee, &mut Transform, &mut Visibility)>,
 ) {
     let Some(cam) = camera.iter().next() else {
         return;
@@ -1315,26 +1353,74 @@ fn standee_system(
 
     // Quantize time to ~4fps so the motion is stepped (stop-motion), not smooth.
     let step = (time.elapsed_secs() * 4.0).floor();
+    let dt = time.delta_secs();
 
-    for (s, mut t) in &mut standees {
+    for (mut s, mut t, mut vis) in &mut standees {
+        // Busted players (no chips, sitting out) get up and leave the table.
+        let busted = poker.game.players[s.seat].stack == 0;
+        if busted {
+            s.walk = (s.walk + dt * 0.5).min(1.0);
+        }
+        if s.walk >= 1.0 {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        *vis = Visibility::Visible;
+
         // Stepped pseudo-noise in [-1, 1], unique per standee via its seed.
         let nx = hash11(s.seed * 1.3 + step * 0.0137) * 2.0 - 1.0;
         let ny = hash11(s.seed * 2.1 + step * 0.0211) * 2.0 - 1.0;
         let nlean = hash11(s.seed * 3.7 + step * 0.0090) * 2.0 - 1.0;
         let nsc = hash11(s.seed * 5.2 + step * 0.0051) * 2.0 - 1.0;
 
-        // Very subtle wobble amounts.
-        let pos = s.base + Vec3::new(nx * 0.011, ny * 0.009, 0.0);
+        // Very subtle idle wobble.
+        let mut pos = s.base + Vec3::new(nx * 0.011, ny * 0.009, 0.0);
+
+        // Walk-away: recede outward from the table, with a stride bob.
+        if s.walk > 0.0 {
+            let out = Vec3::new(s.base.x, 0.0, s.base.z).normalize_or_zero();
+            let stride = (time.elapsed_secs() * 9.0).sin() * 0.12 * (1.0 - s.walk);
+            pos += out * (s.walk * 7.0) + Vec3::Y * stride;
+        }
         t.translation = pos;
 
         // Face the camera, yaw only (target at the standee's own height).
         let target = Vec3::new(cam_pos.x, pos.y, cam_pos.z);
         t.look_at(target, Vec3::Y);
 
-        // A tiny lean + scale pulse on top of the facing rotation.
+        // A tiny lean + scale pulse on top of the facing rotation; shrink a bit
+        // as they walk off into the back of the room.
         t.rotate_local_y(s.yaw_offset);
         t.rotate_local_z(nlean * 0.005);
-        t.scale = s.base_scale * (1.0 + nsc * 0.004);
+        t.scale = s.base_scale * (1.0 + nsc * 0.004) * (1.0 - s.walk * 0.5);
+    }
+}
+
+/// Show the human's two hole cards as a flat 2D overlay in the bottom-left.
+fn human_cards_ui(
+    poker: Res<Poker>,
+    asset_server: Res<AssetServer>,
+    mut q: Query<(&HoleCardUi, &mut ImageNode, &mut Visibility)>,
+) {
+    let human = &poker.game.players[0];
+    for (slot, mut img, mut vis) in &mut q {
+        if human.in_hand() {
+            img.image = asset_server.load(format!("cards/{}.png", human.hole[slot.0].code()));
+            *vis = Visibility::Visible;
+        } else {
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
+/// Hide a busted seat's name plate (it leaves with the character).
+fn seat_visibility(poker: Res<Poker>, mut q: Query<(&SeatVisual, &mut Visibility)>) {
+    for (sv, mut vis) in &mut q {
+        *vis = if poker.game.players[sv.0].stack == 0 {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
     }
 }
 
@@ -1406,7 +1492,6 @@ fn redraw_table(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
     props: Query<Entity, With<TableProp>>,
-    camera: Query<Entity, With<Camera3d>>,
 ) {
     if !needs.0 {
         return;
@@ -1480,33 +1565,8 @@ fn redraw_table(
         }
     }
 
-    // Human hole cards, held first-person: parented to the camera so they sit
-    // in the bottom of the view like you're holding them.
-    if g.players[0].in_hand() {
-        if let Ok(cam_ent) = camera.single() {
-            for (k, card) in g.players[0].hole.iter().enumerate() {
-                let mat = face_material(&mut faces, &mut materials, &asset_server, &card.code());
-                let (lx, lz, fan) = if k == 0 {
-                    (-0.36, -1.45, 0.14)
-                } else {
-                    (0.18, -1.4, -0.10)
-                };
-                let child = commands
-                    .spawn((
-                        Mesh3d(assets.card_quad.clone()),
-                        MeshMaterial3d(mat),
-                        Transform::from_xyz(lx, -0.62, lz)
-                            .with_rotation(
-                                Quat::from_rotation_z(fan) * Quat::from_rotation_x(-0.55),
-                            )
-                            .with_scale(Vec3::splat(0.95)),
-                        TableProp,
-                    ))
-                    .id();
-                commands.entity(cam_ent).add_child(child);
-            }
-        }
-    }
+    // (The human's own hole cards are drawn as a flat 2D UI overlay in the
+    // bottom-left — see `human_cards_ui`.)
 
     // Dealer button next to the button seat.
     let a = poker.seat_angles[g.button];
@@ -1646,13 +1706,18 @@ fn money_labels(
     let g = &poker.game;
     for (label, mut node, mut text, mut vis) in &mut labels {
         let s = label.0;
+        let player = &g.players[s];
+        // Busted players have left the table — drop their label entirely.
+        if player.stack == 0 {
+            *vis = Visibility::Hidden;
+            continue;
+        }
         let a = poker.seat_angles[s];
         let head = Vec3::new(a.cos() * poker.prx, 3.7, a.sin() * poker.prz);
         match cam.world_to_viewport(cam_t, head) {
             Ok(p) => {
                 node.left = Val::Px(p.x - 28.0);
                 node.top = Val::Px(p.y);
-                let player = &g.players[s];
                 let tag = if player.folded { " (folded)" } else { "" };
                 *text = Text::new(format!("${}{}", player.stack, tag));
                 *vis = Visibility::Visible;
