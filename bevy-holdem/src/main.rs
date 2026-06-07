@@ -115,6 +115,16 @@ struct WinBanner;
 #[derive(Resource, Default)]
 struct CardFaces(HashMap<String, Handle<StandardMaterial>>);
 
+/// Sound effects, loaded once.
+#[derive(Resource)]
+struct Sfx {
+    chip: Handle<AudioSource>,
+    knock: Handle<AudioSource>,
+    card: Handle<AudioSource>,
+    deal: Handle<AudioSource>,
+    win: Handle<AudioSource>,
+}
+
 /// Set true after the game state changes; the redraw system rebuilds the props.
 #[derive(Resource)]
 struct NeedsRedraw(bool);
@@ -1133,6 +1143,14 @@ fn setup(
         chip_mats: chip_mats.clone(),
     });
 
+    commands.insert_resource(Sfx {
+        chip: asset_server.load("sfx/chip.wav"),
+        knock: asset_server.load("sfx/knock.wav"),
+        card: asset_server.load("sfx/card.wav"),
+        deal: asset_server.load("sfx/deal.wav"),
+        win: asset_server.load("sfx/win.wav"),
+    });
+
     // Floating money labels above each AI head, and a showdown banner.
     for s in 1..=roster().len() {
         commands.spawn((
@@ -1439,10 +1457,19 @@ fn hash11(x: f32) -> f32 {
 
 /// Drive the table with the AI: one action every `act_timer`, then a pause and
 /// a fresh deal once the hand is over.
-fn auto_play(time: Res<Time>, mut poker: ResMut<Poker>, mut needs: ResMut<NeedsRedraw>) {
+fn auto_play(
+    time: Res<Time>,
+    mut poker: ResMut<Poker>,
+    mut needs: ResMut<NeedsRedraw>,
+    mut commands: Commands,
+    sfx: Res<Sfx>,
+) {
     if poker.paused {
         return;
     }
+    let mut play = |h: &Handle<AudioSource>| {
+        commands.spawn((AudioPlayer(h.clone()), PlaybackSettings::DESPAWN));
+    };
     let dt = time.delta();
     if poker.game.street == Street::HandOver {
         if !poker.waiting_next {
@@ -1454,6 +1481,7 @@ fn auto_play(time: Res<Time>, mut poker: ResMut<Poker>, mut needs: ResMut<NeedsR
             poker.game.start_hand();
             poker.log = "New hand".to_string();
             needs.0 = true;
+            play(&sfx.deal);
         }
         return;
     }
@@ -1463,7 +1491,25 @@ fn auto_play(time: Res<Time>, mut poker: ResMut<Poker>, mut needs: ResMut<NeedsR
         let action = ai_decide(&mut poker.game, seat);
         let name = poker.game.players[seat].name.clone();
         let desc = describe_action(&poker.game, seat, action);
+        let call_amt = poker.game.call_amount(seat);
+        let pre_community = poker.game.community.len();
         poker.game.apply(action);
+
+        // Sound for the action itself.
+        match action {
+            Action::Fold => play(&sfx.card),
+            Action::Check => play(&sfx.knock),
+            Action::Call => play(if call_amt > 0 { &sfx.chip } else { &sfx.knock }),
+            Action::Raise(_) => play(&sfx.chip),
+        }
+        // A new street was dealt → card sound; a showdown → win chime.
+        if poker.game.community.len() > pre_community {
+            play(&sfx.card);
+        }
+        if poker.game.street == Street::HandOver {
+            play(&sfx.win);
+        }
+
         poker.log = format!("{name} {desc}");
         needs.0 = true;
     }
