@@ -173,6 +173,20 @@ fn split_pot_halves_evenly() {
 }
 
 #[test]
+fn all_in_player_is_not_busted() {
+    let mut p = Player::new("x", 0, false, [0.0; 4]);
+    // 0 chips but all-in: still live, must NOT be treated as out (don't leave).
+    p.all_in = true;
+    assert!(!p.busted());
+    // 0 chips, not all-in (sitting out): truly out.
+    p.all_in = false;
+    assert!(p.busted());
+    // Has chips: never busted.
+    p.stack = 100;
+    assert!(!p.busted());
+}
+
+#[test]
 fn fold_out_winner_takes_pot() {
     let mut g = Game::new(test_players(&[1000, 1000, 1000]), 5, 10, 7);
     g.start_hand();

@@ -404,6 +404,12 @@ impl Player {
     pub fn in_hand(&self) -> bool {
         !self.folded
     }
+
+    /// Out of the game: no chips and not currently all-in (an all-in player
+    /// also has a 0 stack but is still live in the hand).
+    pub fn busted(&self) -> bool {
+        self.stack == 0 && !self.all_in
+    }
 }
 
 /// A pot awarded at showdown (or sooner).

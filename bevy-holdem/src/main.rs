@@ -1356,10 +1356,13 @@ fn standee_system(
     let dt = time.delta_secs();
 
     for (mut s, mut t, mut vis) in &mut standees {
-        // Busted players (no chips, sitting out) get up and leave the table.
-        let busted = poker.game.players[s.seat].stack == 0;
+        // Players only get up and leave once they're truly out: no chips and
+        // not merely all-in (an all-in player also has a 0 stack).
+        let busted = poker.game.players[s.seat].busted();
         if busted {
             s.walk = (s.walk + dt * 0.5).min(1.0);
+        } else {
+            s.walk = (s.walk - dt * 1.5).max(0.0);
         }
         if s.walk >= 1.0 {
             *vis = Visibility::Hidden;
@@ -1416,7 +1419,7 @@ fn human_cards_ui(
 /// Hide a busted seat's name plate (it leaves with the character).
 fn seat_visibility(poker: Res<Poker>, mut q: Query<(&SeatVisual, &mut Visibility)>) {
     for (sv, mut vis) in &mut q {
-        *vis = if poker.game.players[sv.0].stack == 0 {
+        *vis = if poker.game.players[sv.0].busted() {
             Visibility::Hidden
         } else {
             Visibility::Visible
@@ -1708,7 +1711,7 @@ fn money_labels(
         let s = label.0;
         let player = &g.players[s];
         // Busted players have left the table — drop their label entirely.
-        if player.stack == 0 {
+        if player.busted() {
             *vis = Visibility::Hidden;
             continue;
         }
@@ -1718,7 +1721,13 @@ fn money_labels(
             Ok(p) => {
                 node.left = Val::Px(p.x - 28.0);
                 node.top = Val::Px(p.y);
-                let tag = if player.folded { " (folded)" } else { "" };
+                let tag = if player.all_in {
+                    " all-in"
+                } else if player.folded {
+                    " (folded)"
+                } else {
+                    ""
+                };
                 *text = Text::new(format!("${}{}", player.stack, tag));
                 *vis = Visibility::Visible;
             }
