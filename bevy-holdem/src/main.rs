@@ -148,6 +148,8 @@ struct Poker {
     /// A community-card deal-in animation is playing; ends at `comm_end`.
     comm_anim: bool,
     comm_end: f32,
+    /// True once we've played the winner's celebration this showdown.
+    celebrated: bool,
     log: String,
 }
 
@@ -177,6 +179,7 @@ struct PokerAssets {
     button_mat: Handle<StandardMaterial>,
     ring_mat: Handle<StandardMaterial>,
     shadow_mat: Handle<StandardMaterial>,
+    glow_mat: Handle<StandardMaterial>,
     chip_mats: Vec<Handle<StandardMaterial>>,
 }
 
@@ -185,9 +188,11 @@ struct PokerAssets {
 #[derive(Component)]
 struct MoneyLabel(usize);
 
-/// The big centre-screen banner shown at showdown.
+/// The big centre-screen banner shown at showdown (text + its framed root).
 #[derive(Component)]
 struct WinBanner;
+#[derive(Component)]
+struct WinBannerRoot;
 
 /// Card-face materials, cached by code ("As") so we don't leak one per redraw.
 #[derive(Resource, Default)]
@@ -292,6 +297,7 @@ fn main() {
             slider_system,
             betting_ui,
             next_round,
+            win_celebrate,
             redraw_table,
             hud,
             money_labels,
@@ -330,7 +336,9 @@ fn build_poker() -> Poker {
         seat_angles.push(deg.to_radians());
     }
 
-    let seed = if env::var("SCREENSHOT").is_ok() {
+    let seed = if let Some(s) = env::var("SEED").ok().and_then(|s| s.parse::<u64>().ok()) {
+        s
+    } else if env::var("SCREENSHOT").is_ok() {
         7 // deterministic state for visual checks
     } else {
         std::time::SystemTime::now()
@@ -403,6 +411,7 @@ fn build_poker() -> Poker {
         comm_shown: 0,
         comm_anim: false,
         comm_end: 0.0,
+        celebrated: false,
         log: "New hand".to_string(),
     }
 }
@@ -1333,6 +1342,13 @@ fn setup(
             unlit: true,
             ..default()
         }),
+        glow_mat: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(asset_server.load("glow.png")),
+            alpha_mode: AlphaMode::Add,
+            unlit: true,
+            ..default()
+        }),
         chip_mats: chip_mats.clone(),
     });
 
@@ -1393,23 +1409,44 @@ fn setup(
             MoneyLabel(s),
         ));
     }
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: 40.0,
-            ..default()
-        },
-        TextColor(Color::srgb(1.0, 0.95, 0.6)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(70.0),
-            left: Val::Px(0.0),
-            right: Val::Px(0.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        WinBanner,
-    ));
+    // Winner banner: a gold-framed panel centred on screen at showdown.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(30.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Visibility::Hidden,
+            WinBannerRoot,
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    padding: UiRect::axes(Val::Px(30.0), Val::Px(16.0)),
+                    border: UiRect::all(Val::Px(3.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.09, 0.07, 0.03, 0.86)),
+                BorderColor::all(Color::srgb(0.88, 0.72, 0.32)),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: 46.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.92, 0.5)),
+                    WinBanner,
+                ));
+            });
+        });
 
     // --- HUD overlay (street / pot / players / last action) ---
     commands.spawn((
@@ -1481,40 +1518,58 @@ fn setup(
             BettingBar,
         ))
         .with_children(|bar| {
-            // Bet-size slider (track + fill + handle).
+            // Bet-size slider: a tall (easy-to-grab) money bar with a $ coin.
             bar.spawn((
                 Node {
-                    width: Val::Px(360.0),
-                    height: Val::Px(22.0),
+                    width: Val::Px(SLIDER_W),
+                    height: Val::Px(46.0),
+                    align_items: AlignItems::Center,
                     ..default()
                 },
-                BackgroundColor(Color::srgb(0.12, 0.12, 0.15)),
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
                 RelativeCursorPosition::default(),
                 SliderTrack,
             ))
             .with_children(|track| {
+                // the groove
                 track.spawn((
                     Node {
                         position_type: PositionType::Absolute,
                         left: Val::Px(0.0),
-                        top: Val::Px(0.0),
-                        bottom: Val::Px(0.0),
-                        width: Val::Percent(50.0),
+                        right: Val::Px(0.0),
+                        top: Val::Px(15.0),
+                        height: Val::Px(16.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.26, 0.5, 0.32)),
-                    SliderFill,
+                    BackgroundColor(Color::srgb(0.1, 0.12, 0.12)),
                 ));
+                // green "money" fill
                 track.spawn((
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Percent(50.0),
-                        top: Val::Px(-5.0),
-                        width: Val::Px(14.0),
-                        height: Val::Px(32.0),
+                        left: Val::Px(0.0),
+                        top: Val::Px(15.0),
+                        height: Val::Px(16.0),
+                        width: Val::Percent(50.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.95, 0.95, 0.9)),
+                    BackgroundColor(Color::srgb(0.24, 0.62, 0.34)),
+                    SliderFill,
+                ));
+                // the $ coin handle
+                track.spawn((
+                    ImageNode {
+                        image: asset_server.load("coin.png"),
+                        ..default()
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(SLIDER_W / 2.0 - 21.0),
+                        top: Val::Px(1.0),
+                        width: Val::Px(42.0),
+                        height: Val::Px(42.0),
+                        ..default()
+                    },
                     SliderHandle,
                 ));
             });
@@ -2246,12 +2301,12 @@ fn slider_system(
             }
         }
     }
-    let pct = slider.frac * 100.0;
     if let Ok(mut f) = fill.single_mut() {
-        f.width = Val::Percent(pct);
+        f.width = Val::Percent(slider.frac * 100.0);
     }
     if let Ok(mut h) = handle.single_mut() {
-        h.left = Val::Percent(pct);
+        // Centre the coin on the chosen fraction.
+        h.left = Val::Px(slider.frac * SLIDER_W - 21.0);
     }
 }
 
@@ -2431,6 +2486,9 @@ fn describe_action(game: &Game, seat: usize, action: Action) -> String {
     }
 }
 
+/// Bet slider track width (px).
+const SLIDER_W: f32 = 360.0;
+
 /// Where the community cards sit (z toward the player) and their x layout.
 const COMMUNITY_Z: f32 = 1.95;
 fn community_x(i: usize, count: f32) -> f32 {
@@ -2568,6 +2626,27 @@ fn redraw_table(
             TableProp,
         ));
     }
+
+    // At showdown, a warm glow behind each winning player.
+    if showdown {
+        let cam = Vec3::new(0.0, 4.7, 10.4);
+        for pay in &g.last_payouts {
+            if pay.seat == 0 {
+                continue; // the human has no standee
+            }
+            let a = poker.seat_angles[pay.seat];
+            let pos = Vec3::new(a.cos() * poker.prx, 2.3, a.sin() * poker.prz);
+            let to_cam = (cam - pos).normalize_or_zero();
+            commands.spawn((
+                Mesh3d(assets.card_quad.clone()),
+                MeshMaterial3d(assets.glow_mat.clone()),
+                Transform::from_translation(pos - to_cam * 0.5)
+                    .looking_at(cam, Vec3::Y)
+                    .with_scale(Vec3::splat(5.0)),
+                TableProp,
+            ));
+        }
+    }
 }
 
 fn face_material(
@@ -2670,6 +2749,7 @@ fn hud(
     poker: Res<Poker>,
     mut q: Query<&mut Text, (With<HudText>, Without<WinBanner>)>,
     mut banner: Query<&mut Text, (With<WinBanner>, Without<HudText>)>,
+    mut banner_root: Query<&mut Visibility, With<WinBannerRoot>>,
 ) {
     let g = &poker.game;
     let mut s = format!("{}    Pot ${}\n\n", street_name(g.street), g.pot());
@@ -2715,6 +2795,49 @@ fn hud(
     };
     for mut text in &mut banner {
         *text = Text::new(banner_text.clone());
+    }
+    let show_banner = g.street == Street::HandOver && !banner_text.is_empty();
+    for mut vis in &mut banner_root {
+        *vis = if show_banner {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// When the showdown settles, the winner(s) cheer: a hop + their voice.
+fn win_celebrate(
+    mut poker: ResMut<Poker>,
+    mut commands: Commands,
+    sfx: Res<Sfx>,
+    mut rng: ResMut<SfxRng>,
+    mut standees: Query<&mut Standee>,
+) {
+    if poker.paused {
+        return;
+    }
+    if poker.game.street != Street::HandOver {
+        poker.celebrated = false;
+        return;
+    }
+    // Wait until the cards have finished rising, then celebrate once.
+    if poker.celebrated || poker.showdown_raise < 0.9 {
+        return;
+    }
+    poker.celebrated = true;
+    let winners: Vec<usize> = poker.game.last_payouts.iter().map(|p| p.seat).collect();
+    for seat in winners {
+        for mut st in &mut standees {
+            if st.seat == seat {
+                st.bounce = 0.6;
+            }
+        }
+        if let Some(list) = sfx.chars.get(seat) {
+            if let Some(h) = rng.pick(list) {
+                play_sfx(&mut commands, &h.clone(), &mut rng);
+            }
+        }
     }
 }
 
