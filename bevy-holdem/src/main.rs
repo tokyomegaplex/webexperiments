@@ -49,6 +49,24 @@ struct SeatVisual(usize);
 #[derive(Component)]
 struct HoleCardUi(usize);
 
+/// The bottom-right "Your money" counter.
+#[derive(Component)]
+struct MyMoney;
+
+/// The container holding the human's action buttons (shown on your turn).
+#[derive(Component)]
+struct BettingBar;
+
+/// A betting action button and which action it performs.
+#[derive(Component, Clone, Copy)]
+enum ActBtn {
+    Fold,
+    CheckCall,
+    RaiseHalf,
+    RaisePot,
+    AllIn,
+}
+
 /// A drifting cigarette-smoke puff: rises, sways, grows and fades on a loop.
 #[derive(Component)]
 struct Smoke {
@@ -161,9 +179,11 @@ fn main() {
             standee_system,
             smoke_system,
             auto_play,
+            betting_ui,
             redraw_table,
             hud,
             money_labels,
+            my_money,
             human_cards_ui,
             seat_visibility,
         ),
@@ -210,25 +230,27 @@ fn build_poker() -> Poker {
     let mut game = Game::new(players, 5, 10, seed);
     game.start_hand();
 
-    // For screenshots, fast-forward until a flop is on the table (dealing fresh
-    // hands past any preflop fold-outs) so the captured frame shows community
-    // cards, multiple hole cards, and a real pot.
+    // For screenshots, fast-forward to the human's turn on the flop so the
+    // captured frame shows the community cards, the pot, and the action buttons.
     if env::var("SCREENSHOT").is_ok() {
         let mut steps = 0;
-        while game.street != Street::Flop && steps < 600 {
-            if game.street == Street::HandOver {
-                game.start_hand();
-            } else {
-                let seat = game.to_act;
-                // Keep the human (seat 0) in the hand so the held cards show.
-                let action = if seat == 0 {
-                    Action::Call
-                } else {
-                    ai_decide(&mut game, seat)
-                };
-                game.apply(action);
+        loop {
+            if steps > 600 {
+                break;
             }
             steps += 1;
+            if game.street == Street::HandOver {
+                game.start_hand();
+            } else if game.to_act == 0 {
+                if game.community.len() >= 3 {
+                    break; // your turn on the flop — stop here
+                }
+                game.apply(Action::Call); // advance preflop without busting out
+            } else {
+                let seat = game.to_act;
+                let action = ai_decide(&mut game, seat);
+                game.apply(action);
+            }
         }
     }
 
@@ -1127,19 +1149,35 @@ fn setup(
     // --- poker: shared card/chip assets used by the redraw system ---
     // (The pot, bets, community + hole cards, and dealer button are now spawned
     // dynamically from the engine state — see `redraw_table`.)
+    let card_quad = meshes.add(Rectangle::new(0.78, 1.08));
+    let card_back = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(asset_server.load("cards/back.png")),
+        perceptual_roughness: 0.5,
+        ..default()
+    });
+
+    // The deck: a face-down stack of cards waiting to be dealt, by the dealer.
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+        * Quat::from_rotation_z(std::f32::consts::PI);
+    for k in 0..16 {
+        commands.spawn((
+            Mesh3d(card_quad.clone()),
+            MeshMaterial3d(card_back.clone()),
+            Transform::from_xyz(-3.5, felt_top + 0.02 + k as f32 * 0.012, -1.4)
+                .with_rotation(flat)
+                .with_scale(Vec3::splat(0.78)),
+        ));
+    }
+
     commands.insert_resource(PokerAssets {
-        card_quad: meshes.add(Rectangle::new(0.78, 1.08)),
+        card_quad: card_quad.clone(),
         chip_mesh: disc.clone(),
         ring_mesh: meshes.add(Torus {
             minor_radius: 0.05,
             major_radius: 0.95,
         }),
-        card_back: materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            base_color_texture: Some(asset_server.load("cards/back.png")),
-            perceptual_roughness: 0.5,
-            ..default()
-        }),
+        card_back: card_back.clone(),
         button_mat: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: Some(asset_server.load("button_d.png")),
@@ -1233,6 +1271,72 @@ fn setup(
             HoleCardUi(k),
         ));
     }
+
+    // Your money counter, bottom-right next to your cards.
+    commands.spawn((
+        Text::new("$1000"),
+        TextFont {
+            font_size: 30.0,
+            ..default()
+        },
+        TextColor(Color::srgb(1.0, 0.92, 0.55)),
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(26.0),
+            bottom: Val::Px(28.0),
+            ..default()
+        },
+        MyMoney,
+    ));
+
+    // Your action buttons (hidden until it's your turn).
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(26.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                column_gap: Val::Px(10.0),
+                ..default()
+            },
+            Visibility::Hidden,
+            BettingBar,
+        ))
+        .with_children(|bar| {
+            for kind in [
+                ActBtn::Fold,
+                ActBtn::CheckCall,
+                ActBtn::RaiseHalf,
+                ActBtn::RaisePot,
+                ActBtn::AllIn,
+            ] {
+                bar.spawn((
+                    Button,
+                    Interaction::default(),
+                    Node {
+                        width: Val::Px(124.0),
+                        height: Val::Px(56.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.16, 0.16, 0.2)),
+                    kind,
+                ))
+                .with_children(|b| {
+                    b.spawn((
+                        Text::new(""),
+                        TextFont {
+                            font_size: 22.0,
+                            ..default()
+                        },
+                        TextColor(Color::WHITE),
+                    ));
+                });
+            }
+        });
 
     // --- ashtray with two cigarettes, off to the back-right of the felt ---
     let ash_x = 3.0;
@@ -1444,6 +1548,19 @@ fn human_cards_ui(
     }
 }
 
+/// Update the bottom-right money counter (your stack, plus your current bet).
+fn my_money(poker: Res<Poker>, mut q: Query<&mut Text, With<MyMoney>>) {
+    let me = &poker.game.players[0];
+    let s = if me.bet > 0 {
+        format!("You: ${}   (bet ${})", me.stack, me.bet)
+    } else {
+        format!("You: ${}", me.stack)
+    };
+    for mut t in &mut q {
+        *t = Text::new(s.clone());
+    }
+}
+
 /// Hide a busted seat's name plate (it leaves with the character).
 fn seat_visibility(poker: Res<Poker>, mut q: Query<(&SeatVisual, &mut Visibility)>) {
     for (sv, mut vis) in &mut q {
@@ -1467,6 +1584,44 @@ fn hash11(x: f32) -> f32 {
 
 /// Drive the table with the AI: one action every `act_timer`, then a pause and
 /// a fresh deal once the hand is over.
+/// Apply one action for the player to act: mutate the game, play the matching
+/// sounds, write the log, and request a redraw. Shared by the AI loop and the
+/// human betting UI.
+fn do_action(
+    poker: &mut Poker,
+    action: Action,
+    needs: &mut NeedsRedraw,
+    commands: &mut Commands,
+    sfx: &Sfx,
+) {
+    let seat = poker.game.to_act;
+    let name = poker.game.players[seat].name.clone();
+    let desc = describe_action(&poker.game, seat, action);
+    let call_amt = poker.game.call_amount(seat);
+    let pre_community = poker.game.community.len();
+    poker.game.apply(action);
+
+    let mut play = |h: &Handle<AudioSource>| {
+        commands.spawn((AudioPlayer(h.clone()), PlaybackSettings::DESPAWN));
+    };
+    match action {
+        Action::Fold => play(&sfx.card),
+        Action::Check => play(&sfx.knock),
+        Action::Call => play(if call_amt > 0 { &sfx.chip } else { &sfx.knock }),
+        Action::Raise(_) => play(&sfx.chip),
+    }
+    if poker.game.community.len() > pre_community {
+        play(&sfx.card);
+    }
+    if poker.game.street == Street::HandOver {
+        play(&sfx.win);
+    }
+    poker.log = format!("{name} {desc}");
+    needs.0 = true;
+}
+
+/// Drive the AI seats: one action every `act_timer`, then a pause and a fresh
+/// deal once the hand is over. The human's turn is left to the betting UI.
 fn auto_play(
     time: Res<Time>,
     mut poker: ResMut<Poker>,
@@ -1477,9 +1632,6 @@ fn auto_play(
     if poker.paused {
         return;
     }
-    let mut play = |h: &Handle<AudioSource>| {
-        commands.spawn((AudioPlayer(h.clone()), PlaybackSettings::DESPAWN));
-    };
     let dt = time.delta();
     if poker.game.street == Street::HandOver {
         if !poker.waiting_next {
@@ -1491,37 +1643,125 @@ fn auto_play(
             poker.game.start_hand();
             poker.log = "New hand".to_string();
             needs.0 = true;
-            play(&sfx.deal);
+            commands.spawn((AudioPlayer(sfx.deal.clone()), PlaybackSettings::DESPAWN));
         }
+        return;
+    }
+
+    // The human (seat 0) decides via the betting UI — don't auto-act for them.
+    if poker.game.to_act == 0 {
         return;
     }
 
     if poker.act_timer.tick(dt).just_finished() {
         let seat = poker.game.to_act;
         let action = ai_decide(&mut poker.game, seat);
-        let name = poker.game.players[seat].name.clone();
-        let desc = describe_action(&poker.game, seat, action);
-        let call_amt = poker.game.call_amount(seat);
-        let pre_community = poker.game.community.len();
-        poker.game.apply(action);
+        do_action(&mut poker, action, &mut needs, &mut commands, &sfx);
+    }
+}
 
-        // Sound for the action itself.
-        match action {
-            Action::Fold => play(&sfx.card),
-            Action::Check => play(&sfx.knock),
-            Action::Call => play(if call_amt > 0 { &sfx.chip } else { &sfx.knock }),
-            Action::Raise(_) => play(&sfx.chip),
-        }
-        // A new street was dealt → card sound; a showdown → win chime.
-        if poker.game.community.len() > pre_community {
-            play(&sfx.card);
-        }
-        if poker.game.street == Street::HandOver {
-            play(&sfx.win);
-        }
+/// Clamp a desired raise total to the legal [min-raise, all-in] window.
+fn raise_to(g: &Game, desired: u32) -> Action {
+    let max = g.max_raise_to(0);
+    let min = g.min_raise_to(0).unwrap_or(max);
+    Action::Raise(desired.clamp(min, max))
+}
 
-        poker.log = format!("{name} {desc}");
-        needs.0 = true;
+/// Show the human's action buttons on their turn and apply the chosen action
+/// (mouse click or keyboard: F=fold, C=check/call, R=raise pot, A=all-in).
+fn betting_ui(
+    mut poker: ResMut<Poker>,
+    mut needs: ResMut<NeedsRedraw>,
+    mut commands: Commands,
+    sfx: Res<Sfx>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut bar: Query<&mut Visibility, With<BettingBar>>,
+    mut buttons: Query<
+        (&Interaction, &ActBtn, &mut BackgroundColor, &Children),
+        With<Button>,
+    >,
+    mut texts: Query<&mut Text>,
+) {
+    let g = &poker.game;
+    let my_turn = g.street != Street::HandOver
+        && g.to_act == 0
+        && !g.players[0].folded
+        && !g.players[0].all_in;
+
+    for mut vis in &mut bar {
+        *vis = if my_turn {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    if !my_turn {
+        return;
+    }
+
+    // Resolve a button kind to a concrete action for the current state.
+    let resolve = |poker: &Poker, kind: ActBtn| -> Action {
+        let g = &poker.game;
+        match kind {
+            ActBtn::Fold => Action::Fold,
+            ActBtn::CheckCall => {
+                if g.can_check(0) {
+                    Action::Check
+                } else {
+                    Action::Call
+                }
+            }
+            ActBtn::RaiseHalf => raise_to(g, g.current_bet + (g.pot() / 2).max(g.big_blind)),
+            ActBtn::RaisePot => raise_to(g, g.current_bet + g.pot().max(g.big_blind)),
+            ActBtn::AllIn => Action::Raise(g.max_raise_to(0)),
+        }
+    };
+
+    // Update button labels (Check vs Call $x) and handle clicks.
+    let mut chosen: Option<Action> = None;
+    for (interaction, kind, mut bg, children) in &mut buttons {
+        // Label
+        let label = match kind {
+            ActBtn::Fold => "Fold".to_string(),
+            ActBtn::CheckCall => {
+                if g.can_check(0) {
+                    "Check".to_string()
+                } else {
+                    format!("Call ${}", g.call_amount(0))
+                }
+            }
+            ActBtn::RaiseHalf => "Raise 1/2".to_string(),
+            ActBtn::RaisePot => "Raise Pot".to_string(),
+            ActBtn::AllIn => "All-in".to_string(),
+        };
+        if let Some(&child) = children.first() {
+            if let Ok(mut t) = texts.get_mut(child) {
+                *t = Text::new(label);
+            }
+        }
+        match *interaction {
+            Interaction::Pressed => {
+                *bg = BackgroundColor(Color::srgb(0.20, 0.45, 0.25));
+                chosen = Some(resolve(&poker, *kind));
+            }
+            Interaction::Hovered => *bg = BackgroundColor(Color::srgb(0.30, 0.30, 0.36)),
+            Interaction::None => *bg = BackgroundColor(Color::srgb(0.16, 0.16, 0.2)),
+        }
+    }
+
+    // Keyboard shortcuts.
+    if keys.just_pressed(KeyCode::KeyF) {
+        chosen = Some(Action::Fold);
+    } else if keys.just_pressed(KeyCode::KeyC) {
+        chosen = Some(resolve(&poker, ActBtn::CheckCall));
+    } else if keys.just_pressed(KeyCode::KeyR) {
+        chosen = Some(resolve(&poker, ActBtn::RaisePot));
+    } else if keys.just_pressed(KeyCode::KeyA) {
+        chosen = Some(resolve(&poker, ActBtn::AllIn));
+    }
+
+    if let Some(action) = chosen {
+        do_action(&mut poker, action, &mut needs, &mut commands, &sfx);
     }
 }
 
