@@ -65,6 +65,12 @@ struct MyMoney;
 #[derive(Component)]
 struct BettingBar;
 
+/// Container + button for advancing to the next hand at showdown.
+#[derive(Component)]
+struct NextRoundBar;
+#[derive(Component)]
+struct NextButton;
+
 /// A betting action button. `CheckFold` shows "Check" when checking is legal
 /// (and never lets you fold for free) and "Fold" when facing a bet.
 #[derive(Component, Clone, Copy)]
@@ -121,10 +127,8 @@ struct Poker {
     /// Where each AI seat (index = seat-1) goes to stand at the bar after
     /// busting out.
     bar_seats: Vec<Vec3>,
-    /// Time between AI actions, and the pause shown after a hand ends.
+    /// Time between AI actions.
     act_timer: Timer,
-    over_timer: Timer,
-    waiting_next: bool,
     /// When true the auto-play loop is frozen (used for deterministic
     /// screenshots so the captured frame matches the prepared state).
     paused: bool,
@@ -287,6 +291,7 @@ fn main() {
             turn_sounds,
             slider_system,
             betting_ui,
+            next_round,
             redraw_table,
             hud,
             money_labels,
@@ -388,8 +393,6 @@ fn build_poker() -> Poker {
         felt_top: 1.15,
         bar_seats,
         act_timer: Timer::from_seconds(0.9, TimerMode::Repeating),
-        over_timer: Timer::from_seconds(3.0, TimerMode::Once),
-        waiting_next: false,
         paused: env::var("SCREENSHOT").is_ok() && !demo,
         pending_deal: true,
         dealing: false,
@@ -1550,6 +1553,46 @@ fn setup(
             });
         });
 
+    // "Next Hand" button (shown at showdown so the result stays up until you go).
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(28.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Visibility::Hidden,
+            NextRoundBar,
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                Button,
+                Interaction::default(),
+                Node {
+                    width: Val::Px(240.0),
+                    height: Val::Px(60.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.42, 0.26)),
+                NextButton,
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new("Next Hand  >"),
+                    TextFont {
+                        font_size: 26.0,
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                ));
+            });
+        });
+
     // --- ashtray with two cigarettes, off to the back-right of the felt ---
     let ash_x = 3.0;
     let ash_z = -1.5;
@@ -1952,18 +1995,9 @@ fn auto_play(
         return;
     }
     let dt = time.delta();
+    // At showdown we hold the result on screen until the player hits "Next
+    // Hand" (handled by `next_round`).
     if poker.game.street == Street::HandOver {
-        if !poker.waiting_next {
-            poker.over_timer.reset();
-            poker.waiting_next = true;
-        }
-        if poker.over_timer.tick(dt).is_finished() {
-            poker.waiting_next = false;
-            poker.game.start_hand();
-            poker.pending_deal = true; // deal_system animates the new hand
-            poker.log = "New hand".to_string();
-            needs.0 = true;
-        }
         return;
     }
 
@@ -2225,6 +2259,51 @@ fn slider_system(
 /// CheckFold = "Check" when checking is free (never a free fold) else "Fold".
 /// Keys: C = check/call, F = fold (only when facing a bet), R = raise (slider),
 /// A = all-in.
+/// At showdown, show the "Next Hand" button and hold the result on screen until
+/// the player clicks it (or presses Space/Enter), then deal the next hand.
+fn next_round(
+    mut poker: ResMut<Poker>,
+    mut needs: ResMut<NeedsRedraw>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut bar: Query<&mut Visibility, With<NextRoundBar>>,
+    mut btn: Query<(&Interaction, &mut BackgroundColor), With<NextButton>>,
+) {
+    // Only once the showdown is settled (cards raised, nothing animating).
+    let show = poker.game.street == Street::HandOver
+        && !poker.dealing
+        && !poker.comm_anim
+        && poker.showdown_raise > 0.9;
+    for mut v in &mut bar {
+        *v = if show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    if poker.paused || !show {
+        return;
+    }
+
+    let mut go = keys.just_pressed(KeyCode::Space) || keys.just_pressed(KeyCode::Enter);
+    for (interaction, mut bg) in &mut btn {
+        match *interaction {
+            Interaction::Pressed => {
+                *bg = BackgroundColor(Color::srgb(0.16, 0.55, 0.28));
+                go = true;
+            }
+            Interaction::Hovered => *bg = BackgroundColor(Color::srgb(0.26, 0.5, 0.32)),
+            Interaction::None => *bg = BackgroundColor(Color::srgb(0.2, 0.42, 0.26)),
+        }
+    }
+    if go {
+        poker.game.start_hand();
+        poker.pending_deal = true;
+        poker.showdown_raise = 0.0;
+        poker.log = "New hand".to_string();
+        needs.0 = true;
+    }
+}
+
 fn betting_ui(
     mut poker: ResMut<Poker>,
     mut needs: ResMut<NeedsRedraw>,
@@ -2353,9 +2432,9 @@ fn describe_action(game: &Game, seat: usize, action: Action) -> String {
 }
 
 /// Where the community cards sit (z toward the player) and their x layout.
-const COMMUNITY_Z: f32 = 1.3;
+const COMMUNITY_Z: f32 = 1.95;
 fn community_x(i: usize, count: f32) -> f32 {
-    (i as f32 - (count - 1.0) / 2.0) * 1.2
+    (i as f32 - (count - 1.0) / 2.0) * 1.12
 }
 
 /// Rebuild all engine-driven props (cards, chips, dealer button) from the
@@ -2408,7 +2487,7 @@ fn redraw_table(
             x,
             COMMUNITY_Z,
             ft,
-            1.4,
+            1.25,
             card_tilt,
             yaw,
         );
@@ -2427,7 +2506,9 @@ fn redraw_table(
         let (cosv, sinv) = (a.cos(), a.sin());
 
         // Bets sit closer to each player (out of the centre / off the cards).
-        if p.bet > 0 {
+        // The human's bet is shown in the bottom-left readout instead, so it
+        // doesn't land on top of the community cards in front of them.
+        if p.bet > 0 && s != 0 {
             let bx = cosv * poker.rx * 0.64;
             let bz = sinv * poker.rz * 0.64;
             spawn_chips(&mut commands, &assets, bx, bz, ft, p.bet, s);
