@@ -121,7 +121,30 @@ struct Poker {
     /// When true the auto-play loop is frozen (used for deterministic
     /// screenshots so the captured frame matches the prepared state).
     paused: bool,
+    /// A fresh hand needs its deal animation kicked off.
+    pending_deal: bool,
+    /// The deal animation is currently playing (hole cards hidden until done).
+    dealing: bool,
+    /// Absolute times (secs): when cards start sliding, and when the deal ends.
+    deal_start: f32,
+    deal_end: f32,
     log: String,
+}
+
+/// A card sliding from the deck out to a seat during the deal animation.
+#[derive(Component)]
+struct DealingCard {
+    from: Vec3,
+    to: Vec3,
+    start: f32,
+    dur: f32,
+    played: bool,
+}
+
+/// A card in the face-down deck stack (jiggled during the shuffle).
+#[derive(Component)]
+struct DeckCard {
+    base: Vec3,
 }
 
 /// Shared meshes/materials the redraw system uses for cards and chips.
@@ -194,6 +217,7 @@ fn main() {
             standee_system,
             smoke_system,
             auto_play,
+            deal_system,
             slider_system,
             betting_ui,
             redraw_table,
@@ -246,9 +270,13 @@ fn build_poker() -> Poker {
     let mut game = Game::new(players, 5, 10, seed);
     game.start_hand();
 
+    // DEAL_DEMO runs the deal animation live (no fast-forward, not paused) so a
+    // timed screenshot can catch cards in flight.
+    let demo = env::var("DEAL_DEMO").is_ok();
+
     // For screenshots, fast-forward to the human's turn on the flop so the
     // captured frame shows the community cards, the pot, and the action buttons.
-    if env::var("SCREENSHOT").is_ok() {
+    if env::var("SCREENSHOT").is_ok() && !demo {
         let mut steps = 0;
         loop {
             if steps > 600 {
@@ -289,22 +317,27 @@ fn build_poker() -> Poker {
         act_timer: Timer::from_seconds(0.9, TimerMode::Repeating),
         over_timer: Timer::from_seconds(3.0, TimerMode::Once),
         waiting_next: false,
-        paused: env::var("SCREENSHOT").is_ok(),
+        paused: env::var("SCREENSHOT").is_ok() && !demo,
+        pending_deal: true,
+        dealing: false,
+        deal_start: 0.0,
+        deal_end: 0.0,
         log: "New hand".to_string(),
     }
 }
 
 fn screenshot_system(mut state: ResMut<ShotState>, mut commands: Commands) {
     state.frame += 1;
-    // Give the renderer + async texture loads a few frames to settle.
-    if state.frame == 30 {
+    // In DEAL_DEMO, capture earlier to catch cards mid-flight.
+    let cap = if env::var("DEAL_DEMO").is_ok() { 6 } else { 30 };
+    if state.frame == cap {
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(state.path.clone()));
     }
     // The screenshot is written asynchronously a frame or two after capture;
     // by now it's safely on disk, so just end the process.
-    if state.frame >= 60 {
+    if state.frame >= cap + 30 {
         std::process::exit(0);
     }
 }
@@ -1176,12 +1209,14 @@ fn setup(
     // The deck: a face-down stack of cards waiting to be dealt, by the dealer.
     let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     for k in 0..16 {
+        let base = Vec3::new(-3.5, felt_top + 0.02 + k as f32 * 0.012, -1.4);
         commands.spawn((
             Mesh3d(card_quad.clone()),
             MeshMaterial3d(card_back.clone()),
-            Transform::from_xyz(-3.5, felt_top + 0.02 + k as f32 * 0.012, -1.4)
+            Transform::from_translation(base)
                 .with_rotation(flat)
                 .with_scale(Vec3::splat(0.78)),
+            DeckCard { base },
         ));
     }
 
@@ -1601,7 +1636,7 @@ fn human_cards_ui(
 ) {
     let human = &poker.game.players[0];
     for (slot, mut img, mut vis) in &mut q {
-        if human.in_hand() {
+        if human.in_hand() && !poker.dealing {
             img.image = asset_server.load(format!("cards/{}.png", human.hole[slot.0].code()));
             *vis = Visibility::Visible;
         } else {
@@ -1694,6 +1729,10 @@ fn auto_play(
     if poker.paused {
         return;
     }
+    // Wait while a hand is being dealt (handled by deal_system).
+    if poker.dealing || poker.pending_deal {
+        return;
+    }
     let dt = time.delta();
     if poker.game.street == Street::HandOver {
         if !poker.waiting_next {
@@ -1703,9 +1742,9 @@ fn auto_play(
         if poker.over_timer.tick(dt).is_finished() {
             poker.waiting_next = false;
             poker.game.start_hand();
+            poker.pending_deal = true; // deal_system animates the new hand
             poker.log = "New hand".to_string();
             needs.0 = true;
-            commands.spawn((AudioPlayer(sfx.deal.clone()), PlaybackSettings::DESPAWN));
         }
         return;
     }
@@ -1719,6 +1758,117 @@ fn auto_play(
         let seat = poker.game.to_act;
         let action = ai_decide(&mut poker.game, seat);
         do_action(&mut poker, action, &mut needs, &mut commands, &sfx);
+    }
+}
+
+/// Kick off and animate the deal: a quick deck shuffle, then face-down cards
+/// slide out from the deck to each seat, one at a time.
+fn deal_system(
+    time: Res<Time>,
+    mut poker: ResMut<Poker>,
+    mut needs: ResMut<NeedsRedraw>,
+    mut commands: Commands,
+    assets: Res<PokerAssets>,
+    sfx: Res<Sfx>,
+    mut q_deal: Query<(Entity, &mut DealingCard, &mut Transform), Without<DeckCard>>,
+    mut q_deck: Query<(&DeckCard, &mut Transform), Without<DealingCard>>,
+) {
+    if poker.paused {
+        return;
+    }
+    let now = time.elapsed_secs();
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+
+    // --- kick off a new deal ---
+    if poker.pending_deal && !poker.dealing {
+        poker.pending_deal = false;
+        let from = Vec3::new(-3.5, poker.felt_top + 0.21, -1.4);
+        let n = poker.game.players.len();
+        let mut order = Vec::new();
+        for i in 1..=n {
+            let s = (poker.game.button + i) % n;
+            if poker.game.players[s].in_hand() {
+                order.push(s);
+            }
+        }
+        let shuffle = 0.45_f32;
+        let step = 0.09_f32;
+        let dur = 0.22_f32;
+        let mut last = now + shuffle;
+        for pass in 0..2 {
+            for (idx, &s) in order.iter().enumerate() {
+                let a = poker.seat_angles[s];
+                let (cosv, sinv) = (a.cos(), a.sin());
+                let off = (pass as f32 - 0.5) * 0.46;
+                let to = Vec3::new(
+                    cosv * poker.rx * 0.72 + (-sinv) * off,
+                    poker.felt_top + 0.022,
+                    sinv * poker.rz * 0.72 + cosv * off,
+                );
+                let start = now + shuffle + (pass * order.len() + idx) as f32 * step;
+                last = last.max(start + dur);
+                commands.spawn((
+                    Mesh3d(assets.card_quad.clone()),
+                    MeshMaterial3d(assets.card_back.clone()),
+                    Transform::from_translation(from)
+                        .with_rotation(flat)
+                        .with_scale(Vec3::splat(0.78)),
+                    DealingCard {
+                        from,
+                        to,
+                        start,
+                        dur,
+                        played: false,
+                    },
+                ));
+            }
+        }
+        poker.dealing = true;
+        poker.deal_start = now + shuffle;
+        poker.deal_end = last + 0.05;
+        needs.0 = true;
+        commands.spawn((AudioPlayer(sfx.deal.clone()), PlaybackSettings::DESPAWN));
+    }
+
+    if !poker.dealing {
+        return;
+    }
+
+    // --- shuffle jiggle on the deck until the first card flies ---
+    let shuffling = now < poker.deal_start;
+    for (deck, mut tr) in &mut q_deck {
+        if shuffling {
+            let j = hash11(deck.base.y * 53.0 + now * 30.0) - 0.5;
+            let k = hash11(deck.base.y * 91.0 + now * 27.0) - 0.5;
+            tr.translation = deck.base + Vec3::new(j * 0.12, 0.0, k * 0.12);
+        } else {
+            tr.translation = deck.base;
+        }
+    }
+
+    // --- slide the dealt cards out ---
+    for (_, mut dc, mut tr) in &mut q_deal {
+        if now >= dc.start && !dc.played {
+            dc.played = true;
+            commands.spawn((AudioPlayer(sfx.card.clone()), PlaybackSettings::DESPAWN));
+        }
+        let p = ((now - dc.start) / dc.dur).clamp(0.0, 1.0);
+        let e = p * p * (3.0 - 2.0 * p); // smoothstep
+        let mut pos = dc.from.lerp(dc.to, e);
+        pos.y += (e * std::f32::consts::PI).sin() * 0.35; // little arc
+        tr.translation = pos;
+    }
+
+    // --- finish ---
+    if now >= poker.deal_end {
+        poker.dealing = false;
+        for (e, _, _) in &q_deal {
+            commands.entity(e).despawn();
+        }
+        for (deck, mut tr) in &mut q_deck {
+            tr.translation = deck.base;
+        }
+        needs.0 = true;
     }
 }
 
@@ -1782,7 +1932,8 @@ fn betting_ui(
     mut texts: Query<&mut Text>,
 ) {
     let g = &poker.game;
-    let my_turn = g.street != Street::HandOver
+    let my_turn = !poker.dealing
+        && g.street != Street::HandOver
         && g.to_act == 0
         && !g.players[0].folded
         && !g.players[0].all_in;
@@ -1937,8 +2088,9 @@ fn redraw_table(
             spawn_chips(&mut commands, &assets, bx, bz, ft, p.bet, s);
         }
 
-        // The human's cards are drawn first-person (held to the screen), below.
-        if p.in_hand() && s != 0 {
+        // While the deal animation plays, the sliding cards stand in for the
+        // hole cards; don't draw the real ones yet.
+        if p.in_hand() && s != 0 && !poker.dealing {
             let hx = cosv * poker.rx * 0.72;
             let hz = sinv * poker.rz * 0.72;
             let (tx, tz) = (-sinv, cosv); // tangent, to lay the two cards side by side
