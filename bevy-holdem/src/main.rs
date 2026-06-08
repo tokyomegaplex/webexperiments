@@ -8,6 +8,7 @@
 //! The poker rules + AI + betting UI are the next phase; this proves the 3D
 //! approach and the art pipeline. Run with `cargo run` (see README).
 
+use bevy::audio::{PlaybackMode, Volume};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::NotShadowCaster;
@@ -128,6 +129,8 @@ struct Poker {
     /// Absolute times (secs): when cards start sliding, and when the deal ends.
     deal_start: f32,
     deal_end: f32,
+    /// Last seat we played a turn voice for (so we only play on a change).
+    last_actor: usize,
     log: String,
 }
 
@@ -173,14 +176,58 @@ struct WinBanner;
 #[derive(Resource, Default)]
 struct CardFaces(HashMap<String, Handle<StandardMaterial>>);
 
-/// Sound effects, loaded once.
+/// Sound effects, discovered from the `sfx/` folder at startup. Lists are
+/// chosen from at random; missing files fall back to the generated ones.
 #[derive(Resource)]
 struct Sfx {
-    chip: Handle<AudioSource>,
-    knock: Handle<AudioSource>,
+    chips: Vec<Handle<AudioSource>>,
     card: Handle<AudioSource>,
+    knock: Handle<AudioSource>,
     deal: Handle<AudioSource>,
-    win: Handle<AudioSource>,
+    win_small: Vec<Handle<AudioSource>>,
+    win_medium: Vec<Handle<AudioSource>>,
+    win_big: Vec<Handle<AudioSource>>,
+    /// Per-seat character voices (seat index; seat 0 = human, usually empty).
+    chars: Vec<Vec<Handle<AudioSource>>>,
+}
+
+/// Small RNG for picking/jittering sound effects (independent of the deck RNG).
+#[derive(Resource)]
+struct SfxRng(u64);
+
+impl SfxRng {
+    fn next_u32(&mut self) -> u32 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (self.0 >> 33) as u32
+    }
+    fn unit(&mut self) -> f32 {
+        (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
+    }
+    fn pick<'a, T>(&mut self, v: &'a [T]) -> Option<&'a T> {
+        if v.is_empty() {
+            None
+        } else {
+            Some(&v[self.next_u32() as usize % v.len()])
+        }
+    }
+    /// A small (pitch, volume) variation to keep repeats from sounding identical.
+    fn jitter(&mut self) -> (f32, f32) {
+        (0.93 + self.unit() * 0.14, 0.78 + self.unit() * 0.22)
+    }
+}
+
+/// Spawn a one-shot sound with randomized pitch + volume.
+fn play_sfx(commands: &mut Commands, h: &Handle<AudioSource>, rng: &mut SfxRng) {
+    let (speed, vol) = rng.jitter();
+    commands.spawn((
+        AudioPlayer(h.clone()),
+        PlaybackSettings {
+            mode: PlaybackMode::Despawn,
+            volume: Volume::Linear(vol),
+            speed,
+            ..default()
+        },
+    ));
 }
 
 /// Set true after the game state changes; the redraw system rebuilds the props.
@@ -209,6 +256,12 @@ fn main() {
     .insert_resource(build_poker())
     .insert_resource(NeedsRedraw(true))
     .insert_resource(BetSlider { frac: 0.5 })
+    .insert_resource(SfxRng(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64 | 1)
+            .unwrap_or(1),
+    ))
     .init_resource::<CardFaces>()
     .add_systems(Startup, setup)
     .add_systems(
@@ -218,6 +271,7 @@ fn main() {
             smoke_system,
             auto_play,
             deal_system,
+            turn_sounds,
             slider_system,
             betting_ui,
             redraw_table,
@@ -322,6 +376,7 @@ fn build_poker() -> Poker {
         dealing: false,
         deal_start: 0.0,
         deal_end: 0.0,
+        last_actor: usize::MAX,
         log: "New hand".to_string(),
     }
 }
@@ -1251,13 +1306,46 @@ fn setup(
         chip_mats: chip_mats.clone(),
     });
 
-    commands.insert_resource(Sfx {
-        chip: asset_server.load("sfx/chip.wav"),
-        knock: asset_server.load("sfx/knock.wav"),
-        card: asset_server.load("sfx/card.wav"),
-        deal: asset_server.load("sfx/deal.wav"),
-        win: asset_server.load("sfx/win.wav"),
-    });
+    {
+        // Discover sound files under assets/sfx and group them by convention.
+        let files = scan_sfx();
+        let fname = |p: &str| -> String { p.rsplit('/').next().unwrap_or(p).to_lowercase() };
+        let pick_prefix = |pre: &str| -> Vec<Handle<AudioSource>> {
+            files
+                .iter()
+                .filter(|f| fname(f).starts_with(pre))
+                .map(|f| asset_server.load(f.clone()))
+                .collect()
+        };
+        let or_else = |mut v: Vec<Handle<AudioSource>>, fallback: &str| {
+            if v.is_empty() {
+                v.push(asset_server.load(fallback.to_string()));
+            }
+            v
+        };
+        let cast = roster();
+        let mut chars: Vec<Vec<Handle<AudioSource>>> = vec![Vec::new()]; // seat 0 = human
+        for c in &cast {
+            let key = format!("characters/{}/", c.id);
+            chars.push(
+                files
+                    .iter()
+                    .filter(|f| f.to_lowercase().contains(&key))
+                    .map(|f| asset_server.load(f.clone()))
+                    .collect(),
+            );
+        }
+        commands.insert_resource(Sfx {
+            chips: or_else(pick_prefix("chip"), "sfx/chip.wav"),
+            card: asset_server.load("sfx/card.wav"),
+            knock: asset_server.load("sfx/knock.wav"),
+            deal: asset_server.load("sfx/deal.wav"),
+            win_small: or_else(pick_prefix("winsmall"), "sfx/win.wav"),
+            win_medium: or_else(pick_prefix("winmedium"), "sfx/win.wav"),
+            win_big: or_else(pick_prefix("winbig"), "sfx/win.wav"),
+            chars,
+        });
+    }
 
     // Floating money labels above each AI head, and a showdown banner.
     for s in 1..=roster().len() {
@@ -1669,6 +1757,43 @@ fn seat_visibility(poker: Res<Poker>, mut q: Query<(&SeatVisual, &mut Visibility
     }
 }
 
+/// Recursively list sound files under `assets/sfx`, returning asset-relative
+/// paths like "sfx/chip1.wav" or "sfx/characters/jaack/jaack1.wav".
+fn scan_sfx() -> Vec<String> {
+    let roots = [env::var("BEVY_ASSET_ROOT").ok(), Some("assets".to_string())];
+    for root in roots.into_iter().flatten() {
+        let base = std::path::Path::new(&root).join("sfx");
+        if !base.is_dir() {
+            continue;
+        }
+        let mut out = Vec::new();
+        let mut stack = vec![base];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("wav") | Some("ogg")
+                ) {
+                    if let Ok(rel) = p.strip_prefix(&root) {
+                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+        if !out.is_empty() {
+            out.sort();
+            return out;
+        }
+    }
+    Vec::new()
+}
+
 /// Cheap deterministic hash → pseudo-noise in [0, 1).
 fn hash11(x: f32) -> f32 {
     let v = (x * 127.1).sin() * 43758.5453;
@@ -1690,6 +1815,7 @@ fn do_action(
     needs: &mut NeedsRedraw,
     commands: &mut Commands,
     sfx: &Sfx,
+    rng: &mut SfxRng,
 ) {
     let seat = poker.game.to_act;
     let name = poker.game.players[seat].name.clone();
@@ -1698,20 +1824,30 @@ fn do_action(
     let pre_community = poker.game.community.len();
     poker.game.apply(action);
 
-    let mut play = |h: &Handle<AudioSource>| {
-        commands.spawn((AudioPlayer(h.clone()), PlaybackSettings::DESPAWN));
-    };
+    let chip = rng.pick(&sfx.chips).cloned().unwrap_or_default();
     match action {
-        Action::Fold => play(&sfx.card),
-        Action::Check => play(&sfx.knock),
-        Action::Call => play(if call_amt > 0 { &sfx.chip } else { &sfx.knock }),
-        Action::Raise(_) => play(&sfx.chip),
+        Action::Fold => play_sfx(commands, &sfx.card, rng),
+        Action::Check => play_sfx(commands, &sfx.knock, rng),
+        Action::Call if call_amt > 0 => play_sfx(commands, &chip, rng),
+        Action::Call => play_sfx(commands, &sfx.knock, rng),
+        Action::Raise(_) => play_sfx(commands, &chip, rng),
     }
     if poker.game.community.len() > pre_community {
-        play(&sfx.card);
+        play_sfx(commands, &sfx.card, rng);
     }
     if poker.game.street == Street::HandOver {
-        play(&sfx.win);
+        // Pick a win sting scaled to the size of the pot just won.
+        let won: u32 = poker.game.last_payouts.iter().map(|p| p.amount).sum();
+        let list = if won >= 600 {
+            &sfx.win_big
+        } else if won >= 180 {
+            &sfx.win_medium
+        } else {
+            &sfx.win_small
+        };
+        if let Some(h) = rng.pick(list) {
+            play_sfx(commands, &h.clone(), rng);
+        }
     }
     poker.log = format!("{name} {desc}");
     needs.0 = true;
@@ -1725,6 +1861,7 @@ fn auto_play(
     mut needs: ResMut<NeedsRedraw>,
     mut commands: Commands,
     sfx: Res<Sfx>,
+    mut sfx_rng: ResMut<SfxRng>,
 ) {
     if poker.paused {
         return;
@@ -1757,7 +1894,33 @@ fn auto_play(
     if poker.act_timer.tick(dt).just_finished() {
         let seat = poker.game.to_act;
         let action = ai_decide(&mut poker.game, seat);
-        do_action(&mut poker, action, &mut needs, &mut commands, &sfx);
+        do_action(&mut poker, action, &mut needs, &mut commands, &sfx, &mut sfx_rng);
+    }
+}
+
+/// Play a character's voice when it becomes their turn (random clip, jittered).
+fn turn_sounds(
+    mut poker: ResMut<Poker>,
+    mut commands: Commands,
+    sfx: Res<Sfx>,
+    mut rng: ResMut<SfxRng>,
+) {
+    if poker.paused || poker.dealing || poker.pending_deal {
+        return;
+    }
+    if poker.game.street == Street::HandOver {
+        poker.last_actor = usize::MAX;
+        return;
+    }
+    let seat = poker.game.to_act;
+    if seat == poker.last_actor {
+        return;
+    }
+    poker.last_actor = seat;
+    if let Some(list) = sfx.chars.get(seat) {
+        if let Some(h) = rng.pick(list) {
+            play_sfx(&mut commands, &h.clone(), &mut rng);
+        }
     }
 }
 
@@ -1770,6 +1933,7 @@ fn deal_system(
     mut commands: Commands,
     assets: Res<PokerAssets>,
     sfx: Res<Sfx>,
+    mut rng: ResMut<SfxRng>,
     mut q_deal: Query<(Entity, &mut DealingCard, &mut Transform), Without<DeckCard>>,
     mut q_deck: Query<(&DeckCard, &mut Transform), Without<DealingCard>>,
 ) {
@@ -1827,7 +1991,7 @@ fn deal_system(
         poker.deal_start = now + shuffle;
         poker.deal_end = last + 0.05;
         needs.0 = true;
-        commands.spawn((AudioPlayer(sfx.deal.clone()), PlaybackSettings::DESPAWN));
+        play_sfx(&mut commands, &sfx.deal, &mut rng);
     }
 
     if !poker.dealing {
@@ -1850,7 +2014,7 @@ fn deal_system(
     for (_, mut dc, mut tr) in &mut q_deal {
         if now >= dc.start && !dc.played {
             dc.played = true;
-            commands.spawn((AudioPlayer(sfx.card.clone()), PlaybackSettings::DESPAWN));
+            play_sfx(&mut commands, &sfx.card, &mut rng);
         }
         let p = ((now - dc.start) / dc.dur).clamp(0.0, 1.0);
         let e = p * p * (3.0 - 2.0 * p); // smoothstep
@@ -1916,6 +2080,7 @@ fn betting_ui(
     mut needs: ResMut<NeedsRedraw>,
     mut commands: Commands,
     sfx: Res<Sfx>,
+    mut sfx_rng: ResMut<SfxRng>,
     slider: Res<BetSlider>,
     keys: Res<ButtonInput<KeyCode>>,
     mut bar: Query<&mut Visibility, With<BettingBar>>,
@@ -2017,7 +2182,7 @@ fn betting_ui(
     }
 
     if let Some(action) = chosen {
-        do_action(&mut poker, action, &mut needs, &mut commands, &sfx);
+        do_action(&mut poker, action, &mut needs, &mut commands, &sfx, &mut sfx_rng);
     }
 }
 
