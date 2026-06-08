@@ -14,6 +14,7 @@ use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
 use bevy::post_process::bloom::Bloom;
 use bevy::render::view::Hdr;
+use bevy::ui::RelativeCursorPosition;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use std::collections::HashMap;
@@ -57,15 +58,27 @@ struct MyMoney;
 #[derive(Component)]
 struct BettingBar;
 
-/// A betting action button and which action it performs.
+/// A betting action button. `CheckFold` shows "Check" when checking is legal
+/// (and never lets you fold for free) and "Fold" when facing a bet.
 #[derive(Component, Clone, Copy)]
 enum ActBtn {
-    Fold,
-    CheckCall,
-    RaiseHalf,
-    RaisePot,
-    AllIn,
+    CheckFold,
+    Call,
+    Raise,
 }
+
+/// The bet-size slider position (0 = min raise, 1 = all-in).
+#[derive(Resource)]
+struct BetSlider {
+    frac: f32,
+}
+
+#[derive(Component)]
+struct SliderTrack;
+#[derive(Component)]
+struct SliderFill;
+#[derive(Component)]
+struct SliderHandle;
 
 /// A drifting cigarette-smoke puff: rises, sways, grows and fades on a loop.
 #[derive(Component)]
@@ -172,6 +185,7 @@ fn main() {
     .insert_resource(ClearColor(Color::srgb(0.04, 0.06, 0.07)))
     .insert_resource(build_poker())
     .insert_resource(NeedsRedraw(true))
+    .insert_resource(BetSlider { frac: 0.5 })
     .init_resource::<CardFaces>()
     .add_systems(Startup, setup)
     .add_systems(
@@ -180,6 +194,7 @@ fn main() {
             standee_system,
             smoke_system,
             auto_play,
+            slider_system,
             betting_ui,
             redraw_table,
             hud,
@@ -1279,70 +1294,110 @@ fn setup(
         ));
     }
 
-    // Your money counter, bottom-right next to your cards.
+    // Your money, shown just above your cards in the bottom-left.
     commands.spawn((
         Text::new("$1000"),
         TextFont {
-            font_size: 30.0,
+            font_size: 28.0,
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.92, 0.55)),
         Node {
             position_type: PositionType::Absolute,
-            right: Val::Px(26.0),
-            bottom: Val::Px(28.0),
+            left: Val::Px(24.0),
+            bottom: Val::Px(184.0),
             ..default()
         },
         MyMoney,
     ));
 
-    // Your action buttons (hidden until it's your turn).
+    // Your action area (slider + buttons), hidden until it's your turn.
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(26.0),
+                bottom: Val::Px(24.0),
                 left: Val::Px(0.0),
                 right: Val::Px(0.0),
-                justify_content: JustifyContent::Center,
-                column_gap: Val::Px(10.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(10.0),
                 ..default()
             },
             Visibility::Hidden,
             BettingBar,
         ))
         .with_children(|bar| {
-            for kind in [
-                ActBtn::Fold,
-                ActBtn::CheckCall,
-                ActBtn::RaiseHalf,
-                ActBtn::RaisePot,
-                ActBtn::AllIn,
-            ] {
-                bar.spawn((
-                    Button,
-                    Interaction::default(),
+            // Bet-size slider (track + fill + handle).
+            bar.spawn((
+                Node {
+                    width: Val::Px(360.0),
+                    height: Val::Px(22.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.12, 0.12, 0.15)),
+                RelativeCursorPosition::default(),
+                SliderTrack,
+            ))
+            .with_children(|track| {
+                track.spawn((
                     Node {
-                        width: Val::Px(124.0),
-                        height: Val::Px(56.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        top: Val::Px(0.0),
+                        bottom: Val::Px(0.0),
+                        width: Val::Percent(50.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.16, 0.16, 0.2)),
-                    kind,
-                ))
-                .with_children(|b| {
-                    b.spawn((
-                        Text::new(""),
-                        TextFont {
-                            font_size: 22.0,
+                    BackgroundColor(Color::srgb(0.26, 0.5, 0.32)),
+                    SliderFill,
+                ));
+                track.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(50.0),
+                        top: Val::Px(-5.0),
+                        width: Val::Px(14.0),
+                        height: Val::Px(32.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.95, 0.95, 0.9)),
+                    SliderHandle,
+                ));
+            });
+
+            // Buttons row.
+            bar.spawn(Node {
+                column_gap: Val::Px(10.0),
+                ..default()
+            })
+            .with_children(|row| {
+                for kind in [ActBtn::CheckFold, ActBtn::Call, ActBtn::Raise] {
+                    row.spawn((
+                        Button,
+                        Interaction::default(),
+                        Node {
+                            width: Val::Px(150.0),
+                            height: Val::Px(56.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
                             ..default()
                         },
-                        TextColor(Color::WHITE),
-                    ));
-                });
-            }
+                        BackgroundColor(Color::srgb(0.16, 0.16, 0.2)),
+                        kind,
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Text::new(""),
+                            TextFont {
+                                font_size: 22.0,
+                                ..default()
+                            },
+                            TextColor(Color::WHITE),
+                        ));
+                    });
+                }
+            });
         });
 
     // --- ashtray with two cigarettes, off to the back-right of the felt ---
@@ -1559,9 +1614,9 @@ fn human_cards_ui(
 fn my_money(poker: Res<Poker>, mut q: Query<&mut Text, With<MyMoney>>) {
     let me = &poker.game.players[0];
     let s = if me.bet > 0 {
-        format!("You: ${}   (bet ${})", me.stack, me.bet)
+        format!("${}  (bet ${})", me.stack, me.bet)
     } else {
-        format!("You: ${}", me.stack)
+        format!("${}", me.stack)
     };
     for mut t in &mut q {
         *t = Text::new(s.clone());
@@ -1667,25 +1722,62 @@ fn auto_play(
     }
 }
 
-/// Clamp a desired raise total to the legal [min-raise, all-in] window.
-fn raise_to(g: &Game, desired: u32) -> Action {
+/// The raise amount currently selected on the slider (clamped legal).
+fn slider_amount(g: &Game, frac: f32) -> u32 {
     let max = g.max_raise_to(0);
     let min = g.min_raise_to(0).unwrap_or(max);
-    Action::Raise(desired.clamp(min, max))
+    if max <= min {
+        return max;
+    }
+    let amt = min as f32 + (max - min) as f32 * frac.clamp(0.0, 1.0);
+    (amt.round() as u32).clamp(min, max)
 }
 
-/// Show the human's action buttons on their turn and apply the chosen action
-/// (mouse click or keyboard: F=fold, C=check/call, R=raise pot, A=all-in).
+/// Drag the bet-size slider and reflect it in the fill + handle position.
+fn slider_system(
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut slider: ResMut<BetSlider>,
+    track: Query<&RelativeCursorPosition, With<SliderTrack>>,
+    mut fill: Query<&mut Node, (With<SliderFill>, Without<SliderHandle>)>,
+    mut handle: Query<&mut Node, (With<SliderHandle>, Without<SliderFill>)>,
+) {
+    if mouse.pressed(MouseButton::Left) {
+        if let Ok(rel) = track.single() {
+            if let Some(n) = rel.normalized {
+                slider.frac = n.x.clamp(0.0, 1.0);
+            }
+        }
+    }
+    let pct = slider.frac * 100.0;
+    if let Ok(mut f) = fill.single_mut() {
+        f.width = Val::Percent(pct);
+    }
+    if let Ok(mut h) = handle.single_mut() {
+        h.left = Val::Percent(pct);
+    }
+}
+
+/// Show the human's action UI on their turn and apply the chosen action.
+/// CheckFold = "Check" when checking is free (never a free fold) else "Fold".
+/// Keys: C = check/call, F = fold (only when facing a bet), R = raise (slider),
+/// A = all-in.
 fn betting_ui(
     mut poker: ResMut<Poker>,
     mut needs: ResMut<NeedsRedraw>,
     mut commands: Commands,
     sfx: Res<Sfx>,
+    slider: Res<BetSlider>,
     keys: Res<ButtonInput<KeyCode>>,
     mut bar: Query<&mut Visibility, With<BettingBar>>,
     mut buttons: Query<
-        (&Interaction, &ActBtn, &mut BackgroundColor, &Children),
-        With<Button>,
+        (
+            &Interaction,
+            &ActBtn,
+            &mut BackgroundColor,
+            &mut Visibility,
+            &Children,
+        ),
+        (With<Button>, Without<BettingBar>),
     >,
     mut texts: Query<&mut Text>,
 ) {
@@ -1706,50 +1798,56 @@ fn betting_ui(
         return;
     }
 
-    // Resolve a button kind to a concrete action for the current state.
-    let resolve = |poker: &Poker, kind: ActBtn| -> Action {
-        let g = &poker.game;
-        match kind {
-            ActBtn::Fold => Action::Fold,
-            ActBtn::CheckCall => {
-                if g.can_check(0) {
-                    Action::Check
-                } else {
-                    Action::Call
-                }
-            }
-            ActBtn::RaiseHalf => raise_to(g, g.current_bet + (g.pot() / 2).max(g.big_blind)),
-            ActBtn::RaisePot => raise_to(g, g.current_bet + g.pot().max(g.big_blind)),
-            ActBtn::AllIn => Action::Raise(g.max_raise_to(0)),
-        }
-    };
+    let can_check = g.can_check(0);
+    let amount = slider_amount(g, slider.frac);
 
-    // Update button labels (Check vs Call $x) and handle clicks.
     let mut chosen: Option<Action> = None;
-    for (interaction, kind, mut bg, children) in &mut buttons {
-        // Label
+    for (interaction, kind, mut bg, mut vis, children) in &mut buttons {
+        // The Call button only appears when there's a bet to call.
+        if matches!(kind, ActBtn::Call) {
+            *vis = if can_check {
+                Visibility::Hidden
+            } else {
+                Visibility::Inherited
+            };
+        }
         let label = match kind {
-            ActBtn::Fold => "Fold".to_string(),
-            ActBtn::CheckCall => {
-                if g.can_check(0) {
+            ActBtn::CheckFold => {
+                if can_check {
                     "Check".to_string()
                 } else {
-                    format!("Call ${}", g.call_amount(0))
+                    "Fold".to_string()
                 }
             }
-            ActBtn::RaiseHalf => "Raise 1/2".to_string(),
-            ActBtn::RaisePot => "Raise Pot".to_string(),
-            ActBtn::AllIn => "All-in".to_string(),
+            ActBtn::Call => format!("Call ${}", g.call_amount(0)),
+            ActBtn::Raise => {
+                if can_check {
+                    format!("Bet ${amount}")
+                } else {
+                    format!("Raise to ${amount}")
+                }
+            }
         };
         if let Some(&child) = children.first() {
             if let Ok(mut t) = texts.get_mut(child) {
                 *t = Text::new(label);
             }
         }
+        let action = match kind {
+            ActBtn::CheckFold => {
+                if can_check {
+                    Action::Check
+                } else {
+                    Action::Fold
+                }
+            }
+            ActBtn::Call => Action::Call,
+            ActBtn::Raise => Action::Raise(amount),
+        };
         match *interaction {
             Interaction::Pressed => {
                 *bg = BackgroundColor(Color::srgb(0.20, 0.45, 0.25));
-                chosen = Some(resolve(&poker, *kind));
+                chosen = Some(action);
             }
             Interaction::Hovered => *bg = BackgroundColor(Color::srgb(0.30, 0.30, 0.36)),
             Interaction::None => *bg = BackgroundColor(Color::srgb(0.16, 0.16, 0.2)),
@@ -1757,14 +1855,14 @@ fn betting_ui(
     }
 
     // Keyboard shortcuts.
-    if keys.just_pressed(KeyCode::KeyF) {
+    if keys.just_pressed(KeyCode::KeyC) {
+        chosen = Some(if can_check { Action::Check } else { Action::Call });
+    } else if keys.just_pressed(KeyCode::KeyF) && !can_check {
         chosen = Some(Action::Fold);
-    } else if keys.just_pressed(KeyCode::KeyC) {
-        chosen = Some(resolve(&poker, ActBtn::CheckCall));
     } else if keys.just_pressed(KeyCode::KeyR) {
-        chosen = Some(resolve(&poker, ActBtn::RaisePot));
+        chosen = Some(Action::Raise(amount));
     } else if keys.just_pressed(KeyCode::KeyA) {
-        chosen = Some(resolve(&poker, ActBtn::AllIn));
+        chosen = Some(Action::Raise(g.max_raise_to(0)));
     }
 
     if let Some(action) = chosen {
