@@ -1159,8 +1159,7 @@ fn setup(
     });
 
     // The deck: a face-down stack of cards waiting to be dealt, by the dealer.
-    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
-        * Quat::from_rotation_z(std::f32::consts::PI);
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     for k in 0..16 {
         commands.spawn((
             Mesh3d(card_quad.clone()),
@@ -1810,9 +1809,9 @@ fn redraw_table(
 
     let g = &poker.game;
     let ft = poker.felt_top;
-    // Lie flat, face up, top edge toward the camera so ranks read right-side-up.
-    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
-        * Quat::from_rotation_z(std::f32::consts::PI);
+    // Lie flat, face up. Top edge points away from the camera (-Z) so the ranks
+    // read right-side-up for the player sitting at the near (+Z) edge.
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
 
     // Community cards, centred, a touch larger, and tilted up toward the camera.
     let c = g.community.len() as f32;
@@ -1914,8 +1913,8 @@ fn face_material(
 }
 
 /// A small banded chip stack whose height scales with the chip amount.
-/// Spawn a table card tilted up toward the camera (so it's easy to read) with
-/// a soft shadow on the felt beneath it. `flat` is the lie-flat orientation.
+/// Spawn a table card lying flat on the felt with a subtle soft shadow peeking
+/// out beneath it. `flat` is the lie-flat (face-up) orientation.
 fn spawn_table_card(
     commands: &mut Commands,
     assets: &PokerAssets,
@@ -1926,25 +1925,22 @@ fn spawn_table_card(
     felt_top: f32,
     scale: f32,
 ) {
-    let tilt = 0.95_f32; // radians up from the table toward the camera
-    let up = Quat::from_rotation_x(tilt) * flat;
-    let lift = 1.08 * scale / 2.0 * tilt.sin(); // raise so the base sits on felt
-
-    // Soft shadow on the felt.
+    // Soft shadow, slightly larger than the card and nudged away from the
+    // camera so a thin edge shows around the card on the felt.
     commands.spawn((
         Mesh3d(assets.card_quad.clone()),
         MeshMaterial3d(assets.shadow_mat.clone()),
-        Transform::from_xyz(x, felt_top + 0.012, z - 0.12)
+        Transform::from_xyz(x + 0.05, felt_top + 0.012, z - 0.08)
             .with_rotation(flat)
-            .with_scale(Vec3::new(scale * 1.15, 1.0, scale * 1.2)),
+            .with_scale(Vec3::new(scale * 1.12, 1.0, scale * 1.12)),
         TableProp,
     ));
-    // The tilted card.
+    // The card, lying flat on the felt.
     commands.spawn((
         Mesh3d(assets.card_quad.clone()),
         MeshMaterial3d(mat),
-        Transform::from_xyz(x, felt_top + 0.02 + lift, z)
-            .with_rotation(up)
+        Transform::from_xyz(x, felt_top + 0.022, z)
+            .with_rotation(flat)
             .with_scale(Vec3::splat(scale)),
         TableProp,
     ));
