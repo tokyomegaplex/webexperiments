@@ -40,6 +40,8 @@ struct Standee {
     seat: usize,
     /// 0 = seated, ramps to 1 as a busted player walks away from the table.
     walk: f32,
+    /// Seconds left of a little squash-and-stretch hop (set when they speak).
+    bounce: f32,
 }
 
 /// Tags a per-seat scene visual (name plate) so it can be hidden when the
@@ -332,8 +334,9 @@ fn build_poker() -> Poker {
     // timed screenshot can catch cards in flight.
     let demo = env::var("DEAL_DEMO").is_ok();
 
-    // For screenshots, fast-forward to the human's turn on the flop so the
-    // captured frame shows the community cards, the pot, and the action buttons.
+    // For screenshots, fast-forward to a representative state: SHOWDOWN stops at
+    // a multi-way showdown; otherwise the human's turn on the flop.
+    let want_showdown = env::var("SHOWDOWN").is_ok();
     if env::var("SCREENSHOT").is_ok() && !demo {
         let mut steps = 0;
         loop {
@@ -342,7 +345,13 @@ fn build_poker() -> Poker {
             }
             steps += 1;
             if game.street == Street::HandOver {
+                if want_showdown && game.live_count() > 1 {
+                    break; // a real showdown — stop here
+                }
                 game.start_hand();
+            } else if want_showdown {
+                let seat = game.to_act;
+                game.apply(Action::Call); // everyone calls down to showdown
             } else if game.to_act == 0 {
                 if game.community.len() >= 3 {
                     break; // your turn on the flop — stop here
@@ -1218,6 +1227,7 @@ fn setup(
                 },
                 seat: i + 1,
                 walk: 0.0,
+                bounce: 0.0,
             },
             Name::new(c.name),
         ));
@@ -1709,16 +1719,31 @@ fn standee_system(
             let stride = (time.elapsed_secs() * 9.0).sin() * 0.13 * (s.walk * (1.0 - s.walk) * 4.0);
             pos.y += stride.max(0.0);
         }
+
+        // Bounce: a little squash-and-stretch hop when the character speaks.
+        const BOUNCE_DUR: f32 = 0.42;
+        let (mut sx, mut sy) = (1.0, 1.0);
+        if s.bounce > 0.0 {
+            s.bounce = (s.bounce - dt).max(0.0);
+            let bp = 1.0 - s.bounce / BOUNCE_DUR; // 0..1 over the hop
+            let hop = (bp * std::f32::consts::PI).sin(); // up then down
+            pos.y += hop * 0.45;
+            // squash on take-off/landing, stretch tall at the apex
+            let stretch = (bp * std::f32::consts::PI * 2.0).sin();
+            sy = 1.0 + 0.16 * hop - 0.10 * (-stretch).max(0.0);
+            sx = 1.0 - 0.12 * hop + 0.08 * (-stretch).max(0.0);
+        }
+
         t.translation = pos;
 
         // Face the camera, yaw only (target at the standee's own height).
         let target = Vec3::new(cam_pos.x, pos.y, cam_pos.z);
         t.look_at(target, Vec3::Y);
 
-        // A tiny lean + scale pulse on top of the facing rotation.
+        // A tiny lean + scale pulse on top of the facing rotation, plus bounce.
         t.rotate_local_y(s.yaw_offset);
         t.rotate_local_z(nlean * 0.005);
-        t.scale = s.base_scale * (1.0 + nsc * 0.004);
+        t.scale = s.base_scale * (1.0 + nsc * 0.004) * Vec3::new(sx, sy, 1.0);
     }
 }
 
@@ -1773,12 +1798,19 @@ fn human_cards_ui(
 
 /// Update the bottom-right money counter (your stack, plus your current bet).
 fn my_money(poker: Res<Poker>, mut q: Query<&mut Text, With<MyMoney>>) {
-    let me = &poker.game.players[0];
-    let s = if me.bet > 0 {
+    let g = &poker.game;
+    let me = &g.players[0];
+    let mut s = if me.bet > 0 {
         format!("${}  (bet ${})", me.stack, me.bet)
     } else {
         format!("${}", me.stack)
     };
+    // At showdown, show your made hand next to your stack.
+    if g.street == Street::HandOver && me.in_hand() {
+        if let Some(hv) = g.hand_value(0) {
+            s = format!("${}  —  {}", me.stack, hv.category.name());
+        }
+    }
     for mut t in &mut q {
         *t = Text::new(s.clone());
     }
@@ -1936,12 +1968,14 @@ fn auto_play(
     }
 }
 
-/// Play a character's voice when it becomes their turn (random clip, jittered).
+/// Play a character's voice when it becomes their turn (random clip, jittered)
+/// and make that character do a little squash-and-stretch hop.
 fn turn_sounds(
     mut poker: ResMut<Poker>,
     mut commands: Commands,
     sfx: Res<Sfx>,
     mut rng: ResMut<SfxRng>,
+    mut standees: Query<&mut Standee>,
 ) {
     if poker.paused || poker.dealing || poker.pending_deal {
         return;
@@ -1955,6 +1989,11 @@ fn turn_sounds(
         return;
     }
     poker.last_actor = seat;
+    for mut st in &mut standees {
+        if st.seat == seat {
+            st.bounce = 0.42;
+        }
+    }
     if let Some(list) = sfx.chars.get(seat) {
         if let Some(h) = rng.pick(list) {
             play_sfx(&mut commands, &h.clone(), &mut rng);
@@ -2265,19 +2304,23 @@ fn redraw_table(
     // read right-side-up for the player sitting at the near (+Z) edge.
     let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
 
-    // Community cards, centred, a touch larger, and tilted up toward the camera.
+    // At showdown the cards flip up so the hands are clearly readable.
+    let showdown = g.street == Street::HandOver;
+    let card_tilt = if showdown { 0.95 } else { 0.0 };
+
+    // Community cards: in the open space toward the player, bigger and centred.
     let c = g.community.len() as f32;
     for (i, card) in g.community.iter().enumerate() {
-        let x = (i as f32 - (c - 1.0) / 2.0) * 1.06;
+        let x = (i as f32 - (c - 1.0) / 2.0) * 1.2;
         let mat = face_material(&mut faces, &mut materials, &asset_server, &card.code());
-        spawn_table_card(&mut commands, &assets, mat, flat, x, -0.7, ft, 1.25);
+        spawn_table_card(&mut commands, &assets, mat, flat, x, 0.9, ft, 1.4, card_tilt);
     }
 
     // The collected pot (everything except the current street's live bets).
     let live_bets: u32 = g.players.iter().map(|p| p.bet).sum();
     let collected = g.pot().saturating_sub(live_bets);
     if collected > 0 {
-        spawn_chips(&mut commands, &assets, 0.0, 0.9, ft, collected, 3);
+        spawn_chips(&mut commands, &assets, 0.0, -0.45, ft, collected, 3);
     }
 
     // Per-seat: bets, hole cards, dealer button.
@@ -2297,10 +2340,9 @@ fn redraw_table(
             let hx = cosv * poker.rx * 0.72;
             let hz = sinv * poker.rz * 0.72;
             let (tx, tz) = (-sinv, cosv); // tangent, to lay the two cards side by side
-            let reveal = g.street == Street::HandOver;
             for (k, card) in p.hole.iter().enumerate() {
                 let off = (k as f32 - 0.5) * 0.46;
-                let mat = if reveal {
+                let mat = if showdown {
                     face_material(&mut faces, &mut materials, &asset_server, &card.code())
                 } else {
                     assets.card_back.clone()
@@ -2313,7 +2355,8 @@ fn redraw_table(
                     hx + tx * off,
                     hz + tz * off,
                     ft,
-                    0.78,
+                    0.85,
+                    card_tilt,
                 );
             }
         }
@@ -2377,9 +2420,20 @@ fn spawn_table_card(
     z: f32,
     felt_top: f32,
     scale: f32,
+    tilt: f32,
 ) {
-    // Soft shadow, slightly larger than the card and nudged away from the
-    // camera so a thin edge shows around the card on the felt.
+    // Optionally stand the card up toward the camera (used at showdown so the
+    // hands are clearly readable); `tilt == 0` lies flat on the felt.
+    let (rot, lift) = if tilt > 0.0 {
+        (
+            Quat::from_rotation_x(tilt) * flat,
+            1.08 * scale / 2.0 * tilt.sin(),
+        )
+    } else {
+        (flat, 0.0)
+    };
+
+    // Soft shadow on the felt beneath the card.
     commands.spawn((
         Mesh3d(assets.card_quad.clone()),
         MeshMaterial3d(assets.shadow_mat.clone()),
@@ -2388,12 +2442,11 @@ fn spawn_table_card(
             .with_scale(Vec3::new(scale * 1.12, 1.0, scale * 1.12)),
         TableProp,
     ));
-    // The card, lying flat on the felt.
     commands.spawn((
         Mesh3d(assets.card_quad.clone()),
         MeshMaterial3d(mat),
-        Transform::from_xyz(x, felt_top + 0.022, z)
-            .with_rotation(flat)
+        Transform::from_xyz(x, felt_top + 0.022 + lift, z)
+            .with_rotation(rot)
             .with_scale(Vec3::splat(scale)),
         TableProp,
     ));
@@ -2503,16 +2556,28 @@ fn money_labels(
         let head = Vec3::new(a.cos() * poker.prx, 3.7, a.sin() * poker.prz);
         match cam.world_to_viewport(cam_t, head) {
             Ok(p) => {
-                node.left = Val::Px(p.x - 28.0);
+                node.left = Val::Px(p.x - 40.0);
                 node.top = Val::Px(p.y);
-                let tag = if player.all_in {
-                    " all-in"
-                } else if player.folded {
-                    " (folded)"
+                // At showdown, call out each live player's made hand.
+                let content = if g.street == Street::HandOver {
+                    if player.folded {
+                        format!("${}  folded", player.stack)
+                    } else if let Some(hv) = g.hand_value(s) {
+                        format!("${}  {}", player.stack, hv.category.name())
+                    } else {
+                        format!("${}", player.stack)
+                    }
                 } else {
-                    ""
+                    let tag = if player.all_in {
+                        " all-in"
+                    } else if player.folded {
+                        " (folded)"
+                    } else {
+                        ""
+                    };
+                    format!("${}{}", player.stack, tag)
                 };
-                *text = Text::new(format!("${}{}", player.stack, tag));
+                *text = Text::new(content);
                 *vis = Visibility::Visible;
             }
             Err(_) => *vis = Visibility::Hidden,
