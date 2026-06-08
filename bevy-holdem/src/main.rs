@@ -71,6 +71,19 @@ struct NextRoundBar;
 #[derive(Component)]
 struct NextButton;
 
+/// The single bobbing arrow that points at whoever's turn it is.
+#[derive(Component)]
+struct TurnArrow;
+
+/// A chip flying from a player into the pot when they bet.
+#[derive(Component)]
+struct FlyingChip {
+    from: Vec3,
+    to: Vec3,
+    start: f32,
+    dur: f32,
+}
+
 /// A betting action button. `CheckFold` shows "Check" when checking is legal
 /// (and never lets you fold for free) and "Fold" when facing a bet.
 #[derive(Component, Clone, Copy)]
@@ -160,6 +173,7 @@ struct DealingCard {
     to: Vec3,
     start: f32,
     dur: f32,
+    scale: f32,
     played: bool,
 }
 
@@ -175,6 +189,7 @@ struct PokerAssets {
     card_quad: Handle<Mesh>,
     chip_mesh: Handle<Mesh>,
     ring_mesh: Handle<Mesh>,
+    arrow_mesh: Handle<Mesh>,
     card_back: Handle<StandardMaterial>,
     button_mat: Handle<StandardMaterial>,
     ring_mat: Handle<StandardMaterial>,
@@ -298,6 +313,8 @@ fn main() {
             betting_ui,
             next_round,
             win_celebrate,
+            turn_arrow,
+            chip_fly,
             redraw_table,
             hud,
             money_labels,
@@ -1314,12 +1331,34 @@ fn setup(
         ));
     }
 
+    // The single "whose turn" arrow (positioned/bobbed by `turn_arrow`).
+    commands.spawn((
+        Mesh3d(meshes.add(Cone {
+            radius: 0.17,
+            height: 0.34,
+        })),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.82, 0.22),
+            emissive: LinearRgba::rgb(0.9, 0.62, 0.12),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, -10.0, 0.0).with_rotation(Quat::from_rotation_x(std::f32::consts::PI)),
+        Visibility::Hidden,
+        NotShadowCaster,
+        TurnArrow,
+    ));
+
     commands.insert_resource(PokerAssets {
         card_quad: card_quad.clone(),
         chip_mesh: disc.clone(),
         ring_mesh: meshes.add(Torus {
             minor_radius: 0.05,
             major_radius: 0.95,
+        }),
+        arrow_mesh: meshes.add(Cone {
+            radius: 0.17,
+            height: 0.34,
         }),
         card_back: card_back.clone(),
         button_mat: materials.add(StandardMaterial {
@@ -1699,9 +1738,15 @@ fn setup(
     let cig_mesh = meshes.add(Cylinder::new(0.028, 0.62));
     let smoke_tex = asset_server.load("smoke.png");
     let smoke_quad = meshes.add(Rectangle::new(1.0, 1.0));
-    for (sx, ang) in [(-0.18_f32, 0.5_f32), (0.16, -0.7)] {
-        let rot = Quat::from_rotation_y(ang) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
-        let base = Vec3::new(ash_x + sx, felt_top + 0.08, ash_z);
+    // Two cigarettes resting at different angles, tilted up so they sit on the
+    // rim instead of clipping through the dish.
+    for (sx, sz, yaw, tilt) in [
+        (-0.15_f32, 0.05_f32, 0.62_f32, 0.26_f32),
+        (0.12, -0.1, -0.42, 0.15),
+    ] {
+        let rot = Quat::from_rotation_y(yaw)
+            * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2 - tilt);
+        let base = Vec3::new(ash_x + sx, felt_top + 0.115, ash_z + sz);
         let dir = rot * Vec3::Y; // cylinder long axis after rotation
         commands.spawn((
             Mesh3d(cig_mesh.clone()),
@@ -1988,20 +2033,52 @@ fn hash11(x: f32) -> f32 {
 /// Apply one action for the player to act: mutate the game, play the matching
 /// sounds, write the log, and request a redraw. Shared by the AI loop and the
 /// human betting UI.
+#[allow(clippy::too_many_arguments)]
 fn do_action(
     poker: &mut Poker,
     action: Action,
     needs: &mut NeedsRedraw,
     commands: &mut Commands,
+    assets: &PokerAssets,
     sfx: &Sfx,
     rng: &mut SfxRng,
+    now: f32,
 ) {
     let seat = poker.game.to_act;
     let name = poker.game.players[seat].name.clone();
     let desc = describe_action(&poker.game, seat, action);
     let call_amt = poker.game.call_amount(seat);
     let pre_community = poker.game.community.len();
+    let pre_stack = poker.game.players[seat].stack;
     poker.game.apply(action);
+
+    // Chips the player just pushed in fly to the pot.
+    let thrown = pre_stack.saturating_sub(poker.game.players[seat].stack);
+    if thrown > 0 {
+        let a = poker.seat_angles[seat];
+        let ft = poker.felt_top;
+        let from = Vec3::new(a.cos() * poker.rx * 0.78, ft + 0.06, a.sin() * poker.rz * 0.78);
+        let to = Vec3::new(0.0, ft + 0.06, -0.55);
+        let n = ((thrown as f32).sqrt() * 0.4).round().clamp(1.0, 6.0) as usize;
+        for k in 0..n {
+            let jitter = Vec3::new(
+                (rng.unit() - 0.5) * 0.25,
+                0.0,
+                (rng.unit() - 0.5) * 0.25,
+            );
+            commands.spawn((
+                Mesh3d(assets.chip_mesh.clone()),
+                MeshMaterial3d(assets.chip_mats[seat % assets.chip_mats.len()].clone()),
+                Transform::from_translation(from).with_scale(Vec3::new(0.24, 0.04, 0.24)),
+                FlyingChip {
+                    from,
+                    to: to + jitter,
+                    start: now + k as f32 * 0.05,
+                    dur: 0.34,
+                },
+            ));
+        }
+    }
 
     let chip = rng.pick(&sfx.chips).cloned().unwrap_or_default();
     match action {
@@ -2039,6 +2116,7 @@ fn auto_play(
     mut poker: ResMut<Poker>,
     mut needs: ResMut<NeedsRedraw>,
     mut commands: Commands,
+    assets: Res<PokerAssets>,
     sfx: Res<Sfx>,
     mut sfx_rng: ResMut<SfxRng>,
 ) {
@@ -2064,7 +2142,10 @@ fn auto_play(
     if poker.act_timer.tick(dt).just_finished() {
         let seat = poker.game.to_act;
         let action = ai_decide(&mut poker.game, seat);
-        do_action(&mut poker, action, &mut needs, &mut commands, &sfx, &mut sfx_rng);
+        let now = time.elapsed_secs();
+        do_action(
+            &mut poker, action, &mut needs, &mut commands, &assets, &sfx, &mut sfx_rng, now,
+        );
     }
 }
 
@@ -2167,7 +2248,17 @@ fn deal_system(
                 );
                 let start = now + shuffle + (pass * order.len() + idx) as f32 * step;
                 last = last.max(start + dur);
-                spawn_dealing_card(&mut commands, &assets, assets.card_back.clone(), deck_pos, to, start, dur, flat);
+                spawn_dealing_card(
+                    &mut commands,
+                    &assets,
+                    assets.card_back.clone(),
+                    deck_pos,
+                    to,
+                    start,
+                    dur,
+                    flat,
+                    0.85,
+                );
             }
         }
         poker.dealing = true;
@@ -2193,7 +2284,7 @@ fn deal_system(
             last = last.max(start + dur);
             let code = poker.game.community[i].code();
             let mat = face_material(&mut faces, &mut materials, &asset_server, &code);
-            spawn_dealing_card(&mut commands, &assets, mat, deck_pos, to, start, dur, flat);
+            spawn_dealing_card(&mut commands, &assets, mat, deck_pos, to, start, dur, flat, 1.25);
         }
         poker.comm_anim = true;
         poker.comm_end = last + 0.05;
@@ -2215,39 +2306,46 @@ fn deal_system(
         }
     }
 
-    // --- slide every flying card from the deck to its target ---
-    for (e, mut dc, mut tr) in &mut q_deal {
+    // --- slide every flying card from the deck to its target, growing as it
+    // goes. Landed cards rest at the target (they're cleared only when the real
+    // cards are drawn) so there's no flicker gap. ---
+    for (_, mut dc, mut tr) in &mut q_deal {
         if now >= dc.start && !dc.played {
             dc.played = true;
             play_sfx(&mut commands, &sfx.card, &mut rng);
-        }
-        if now >= dc.start + dc.dur + 0.04 {
-            commands.entity(e).despawn();
-            continue;
         }
         let p = ((now - dc.start) / dc.dur).clamp(0.0, 1.0);
         let e2 = p * p * (3.0 - 2.0 * p); // smoothstep
         let mut pos = dc.from.lerp(dc.to, e2);
         pos.y += (e2 * std::f32::consts::PI).sin() * 0.35; // little arc
         tr.translation = pos;
+        tr.scale = Vec3::splat(dc.scale * (0.55 + 0.45 * e2)); // smoothly scale up
     }
 
-    // --- finish the animations ---
+    // --- finish the animations: real cards appear and flying ones are cleared
+    // in the same frame (no gap). ---
     if poker.dealing && now >= poker.deal_end {
         poker.dealing = false;
         for (deck, mut tr) in &mut q_deck {
             tr.translation = deck.base;
+        }
+        for (e, _, _) in &q_deal {
+            commands.entity(e).despawn();
         }
         needs.0 = true;
     }
     if poker.comm_anim && now >= poker.comm_end {
         poker.comm_anim = false;
         poker.comm_shown = poker.game.community.len();
+        for (e, _, _) in &q_deal {
+            commands.entity(e).despawn();
+        }
         needs.0 = true;
     }
 }
 
 /// Spawn one card flying from the deck to a target, for the deal animations.
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn spawn_dealing_card(
     commands: &mut Commands,
@@ -2258,18 +2356,20 @@ fn spawn_dealing_card(
     start: f32,
     dur: f32,
     flat: Quat,
+    scale: f32,
 ) {
     commands.spawn((
         Mesh3d(assets.card_quad.clone()),
         MeshMaterial3d(mat),
         Transform::from_translation(from)
             .with_rotation(flat)
-            .with_scale(Vec3::splat(0.8)),
+            .with_scale(Vec3::splat(scale * 0.55)),
         DealingCard {
             from,
             to,
             start,
             dur,
+            scale,
             played: false,
         },
     ));
@@ -2360,9 +2460,11 @@ fn next_round(
 }
 
 fn betting_ui(
+    time: Res<Time>,
     mut poker: ResMut<Poker>,
     mut needs: ResMut<NeedsRedraw>,
     mut commands: Commands,
+    assets: Res<PokerAssets>,
     sfx: Res<Sfx>,
     mut sfx_rng: ResMut<SfxRng>,
     slider: Res<BetSlider>,
@@ -2467,7 +2569,10 @@ fn betting_ui(
     }
 
     if let Some(action) = chosen {
-        do_action(&mut poker, action, &mut needs, &mut commands, &sfx, &mut sfx_rng);
+        let now = time.elapsed_secs();
+        do_action(
+            &mut poker, action, &mut needs, &mut commands, &assets, &sfx, &mut sfx_rng, now,
+        );
     }
 }
 
@@ -2551,25 +2656,21 @@ fn redraw_table(
         );
     }
 
-    // The collected pot (everything except the current street's live bets).
-    let live_bets: u32 = g.players.iter().map(|p| p.bet).sum();
-    let collected = g.pot().saturating_sub(live_bets);
-    if collected > 0 {
-        spawn_chips(&mut commands, &assets, 0.0, -0.45, ft, collected, 3);
+    // The pot in the middle (everything committed so far).
+    if g.pot() > 0 {
+        spawn_chips(&mut commands, &assets, 0.0, -0.55, ft, g.pot(), 3);
     }
 
-    // Per-seat: bets, hole cards, dealer button.
+    // Per-seat: stacks, hole cards, dealer button.
     for (s, p) in g.players.iter().enumerate() {
         let a = poker.seat_angles[s];
         let (cosv, sinv) = (a.cos(), a.sin());
 
-        // Bets sit closer to each player (out of the centre / off the cards).
-        // The human's bet is shown in the bottom-left readout instead, so it
-        // doesn't land on top of the community cards in front of them.
-        if p.bet > 0 && s != 0 {
-            let bx = cosv * poker.rx * 0.64;
-            let bz = sinv * poker.rz * 0.64;
-            spawn_chips(&mut commands, &assets, bx, bz, ft, p.bet, s);
+        // Each player's remaining stack, in front of their seat.
+        if p.stack > 0 {
+            let bx = cosv * poker.rx * 0.92 + (-sinv) * 0.55;
+            let bz = sinv * poker.rz * 0.92 + cosv * 0.55;
+            spawn_chips(&mut commands, &assets, bx, bz, ft, p.stack, s);
         }
 
         // While the deal animation plays, the sliding cards stand in for the
@@ -2605,27 +2706,22 @@ fn redraw_table(
     // (The human's own hole cards are drawn as a flat 2D UI overlay in the
     // bottom-left — see `human_cards_ui`.)
 
-    // Dealer button next to the button seat.
+    // Dealer button, off to the side of the button seat's cards (not on them).
     let a = poker.seat_angles[g.button];
+    let (bc, bs) = (a.cos(), a.sin());
     commands.spawn((
         Mesh3d(assets.chip_mesh.clone()),
         MeshMaterial3d(assets.button_mat.clone()),
-        Transform::from_xyz(a.cos() * poker.rx * 0.6, ft + 0.02, a.sin() * poker.rz * 0.6)
-            .with_scale(Vec3::new(0.34, 0.04, 0.34)),
+        Transform::from_xyz(
+            bc * poker.rx * 0.72 + (-bs) * 1.0,
+            ft + 0.02,
+            bs * poker.rz * 0.72 + bc * 1.0,
+        )
+        .with_scale(Vec3::new(0.32, 0.04, 0.32)),
         TableProp,
     ));
 
-    // "Action on you" — a glowing ring in front of the player to act.
-    if g.street != Street::HandOver {
-        let a = poker.seat_angles[g.to_act];
-        commands.spawn((
-            Mesh3d(assets.ring_mesh.clone()),
-            MeshMaterial3d(assets.ring_mat.clone()),
-            Transform::from_xyz(a.cos() * poker.rx * 0.72, ft + 0.012, a.sin() * poker.rz * 0.72)
-                .with_scale(Vec3::new(0.62, 1.0, 0.62)),
-            TableProp,
-        ));
-    }
+    // ("Action on you" arrow is a single persistent entity — see `turn_arrow`.)
 
     // At showdown, a warm glow behind each winning player.
     if showdown {
@@ -2807,6 +2903,50 @@ fn hud(
 }
 
 /// When the showdown settles, the winner(s) cheer: a hop + their voice.
+/// Bob the single turn-arrow above whoever's turn it is (hidden otherwise).
+fn turn_arrow(
+    time: Res<Time>,
+    poker: Res<Poker>,
+    mut q: Query<(&mut Transform, &mut Visibility), With<TurnArrow>>,
+) {
+    let g = &poker.game;
+    // Only point at the AI seats (your own turn is obvious from the buttons).
+    let active = g.street != Street::HandOver
+        && g.to_act != 0
+        && !poker.dealing
+        && !poker.comm_anim
+        && !poker.pending_deal;
+    for (mut tr, mut vis) in &mut q {
+        if !active {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        *vis = Visibility::Visible;
+        let a = poker.seat_angles[g.to_act];
+        let bob = (time.elapsed_secs() * 3.2).sin() * 0.12;
+        tr.translation = Vec3::new(a.cos() * poker.prx, 3.95 + bob, a.sin() * poker.prz);
+    }
+}
+
+/// Move chips flying into the pot; despawn them when they land.
+fn chip_fly(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &FlyingChip, &mut Transform)>,
+) {
+    let now = time.elapsed_secs();
+    for (e, fc, mut tr) in &mut q {
+        if now >= fc.start + fc.dur {
+            commands.entity(e).despawn();
+            continue;
+        }
+        let p = ((now - fc.start) / fc.dur).clamp(0.0, 1.0);
+        let mut pos = fc.from.lerp(fc.to, p);
+        pos.y += (p * std::f32::consts::PI).sin() * 0.6; // arc up and into the pot
+        tr.translation = pos;
+    }
+}
+
 fn win_celebrate(
     mut poker: ResMut<Poker>,
     mut commands: Commands,
