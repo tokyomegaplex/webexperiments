@@ -80,6 +80,9 @@ struct Poker {
     prx: f32,
     prz: f32,
     felt_top: f32,
+    /// Where each AI seat (index = seat-1) goes to stand at the bar after
+    /// busting out.
+    bar_seats: Vec<Vec3>,
     /// Time between AI actions, and the pause shown after a hand ends.
     act_timer: Timer,
     over_timer: Timer,
@@ -229,6 +232,13 @@ fn build_poker() -> Poker {
         }
     }
 
+    // Where busted players go to nurse a drink: standing at the bar stools in
+    // the back. One slot per AI seat.
+    let bar_seats: Vec<Vec3> = [-5.5_f32, -2.5, 0.5, 3.5, 6.5]
+        .iter()
+        .map(|&x| Vec3::new(x, 1.6, -8.6))
+        .collect();
+
     Poker {
         game,
         seat_angles,
@@ -237,6 +247,7 @@ fn build_poker() -> Poker {
         prx: rx + 0.35,
         prz: rz + 0.55,
         felt_top: 1.15,
+        bar_seats,
         act_timer: Timer::from_seconds(0.9, TimerMode::Repeating),
         over_timer: Timer::from_seconds(3.0, TimerMode::Once),
         waiting_next: false,
@@ -265,6 +276,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
+    poker: Res<Poker>,
 ) {
     // Oval table dimensions (x radius, z radius), felt surface height, floor.
     let rx = 5.4_f32;
@@ -898,8 +910,9 @@ fn setup(
     let stool_post_mesh = meshes.add(Cylinder::new(0.07, 1.5));
     let stool_ring_mesh = meshes.add(Torus { minor_radius: 0.028, major_radius: 0.26 });
     let stool_y = floor_y + 1.5;
-    for sx in [-6.5_f32, -2.2, 2.2, 6.5] {
-        let sz = bar_z + 2.7;
+    // One stool per AI seat, at the spots busted players walk to.
+    for slot in &poker.bar_seats {
+        let (sx, sz) = (slot.x, slot.z);
         commands.spawn((
             Mesh3d(stool_seat_mesh.clone()),
             MeshMaterial3d(stool_seat_mat.clone()),
@@ -1378,13 +1391,9 @@ fn standee_system(
         // not merely all-in (an all-in player also has a 0 stack).
         let busted = poker.game.players[s.seat].busted();
         if busted {
-            s.walk = (s.walk + dt * 0.5).min(1.0);
+            s.walk = (s.walk + dt * 0.4).min(1.0);
         } else {
             s.walk = (s.walk - dt * 1.5).max(0.0);
-        }
-        if s.walk >= 1.0 {
-            *vis = Visibility::Hidden;
-            continue;
         }
         *vis = Visibility::Visible;
 
@@ -1397,11 +1406,13 @@ fn standee_system(
         // Very subtle idle wobble.
         let mut pos = s.base + Vec3::new(nx * 0.011, ny * 0.009, 0.0);
 
-        // Walk-away: recede outward from the table, with a stride bob.
+        // Busted: walk over to a stool at the bar in the back and stay there.
         if s.walk > 0.0 {
-            let out = Vec3::new(s.base.x, 0.0, s.base.z).normalize_or_zero();
-            let stride = (time.elapsed_secs() * 9.0).sin() * 0.12 * (1.0 - s.walk);
-            pos += out * (s.walk * 7.0) + Vec3::Y * stride;
+            let target = poker.bar_seats[(s.seat - 1) % poker.bar_seats.len()];
+            let e = s.walk * s.walk * (3.0 - 2.0 * s.walk); // smoothstep
+            pos = s.base.lerp(target, e);
+            let stride = (time.elapsed_secs() * 9.0).sin() * 0.13 * (s.walk * (1.0 - s.walk) * 4.0);
+            pos.y += stride.max(0.0);
         }
         t.translation = pos;
 
@@ -1409,11 +1420,10 @@ fn standee_system(
         let target = Vec3::new(cam_pos.x, pos.y, cam_pos.z);
         t.look_at(target, Vec3::Y);
 
-        // A tiny lean + scale pulse on top of the facing rotation; shrink a bit
-        // as they walk off into the back of the room.
+        // A tiny lean + scale pulse on top of the facing rotation.
         t.rotate_local_y(s.yaw_offset);
         t.rotate_local_z(nlean * 0.005);
-        t.scale = s.base_scale * (1.0 + nsc * 0.004) * (1.0 - s.walk * 0.5);
+        t.scale = s.base_scale * (1.0 + nsc * 0.004);
     }
 }
 
