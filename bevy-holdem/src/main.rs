@@ -71,6 +71,13 @@ struct NextRoundBar;
 #[derive(Component)]
 struct NextButton;
 
+/// Bubble the bartender: a billboard that faces the camera with an idle wobble.
+#[derive(Component)]
+struct BarStandee {
+    base: Vec3,
+    seed: f32,
+}
+
 /// The single bobbing arrow that points at whoever's turn it is.
 #[derive(Component)]
 struct TurnArrow;
@@ -314,6 +321,7 @@ fn main() {
             next_round,
             win_celebrate,
             turn_arrow,
+            bar_standee,
             chip_fly,
             redraw_table,
             hud,
@@ -932,68 +940,27 @@ fn setup(
         Transform::from_xyz(0.0, floor_y + 2.4, bar_z + 1.0),
     ));
 
-    // --- bartender behind the counter (stylised: shirt, vest, bow-tie) ---
+    // --- Bubble the bartender: a billboard standee behind the counter ---
     {
-        let bx = -7.5;
-        let bbz = bar_z + 0.4; // between the back shelves and the counter
-        let shirt = materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(232, 230, 224),
-            perceptual_roughness: 0.7,
-            ..default()
-        });
-        let vest = materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(28, 28, 34),
-            perceptual_roughness: 0.6,
-            ..default()
-        });
-        let skin = materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(232, 196, 150),
-            perceptual_roughness: 0.8,
-            ..default()
-        });
-        let hair = materials.add(StandardMaterial {
-            base_color: Color::srgb_u8(48, 32, 22),
-            perceptual_roughness: 0.9,
-            ..default()
-        });
-        // torso (white shirt) with a dark vest panel in front
+        let base = Vec3::new(-7.5, floor_y + 2.5, bar_z + 0.5);
         commands.spawn((
-            Mesh3d(meshes.add(Cylinder::new(0.42, 1.5))),
-            MeshMaterial3d(shirt.clone()),
-            Transform::from_xyz(bx, floor_y + 2.25, bbz),
+            Mesh3d(meshes.add(Rectangle::new(3.0, 4.06))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: Some(asset_server.load("characters/Bubble.png")),
+                emissive: LinearRgba::rgb(0.6, 0.6, 0.6),
+                emissive_texture: Some(asset_server.load("characters/Bubble.png")),
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                alpha_mode: AlphaMode::Blend,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            })),
+            Transform::from_translation(base),
+            NotShadowCaster,
+            BarStandee { base, seed: 4.2 },
         ));
-        commands.spawn((
-            Mesh3d(meshes.add(Cuboid::new(0.66, 1.35, 0.2))),
-            MeshMaterial3d(vest.clone()),
-            Transform::from_xyz(bx, floor_y + 2.2, bbz + 0.34),
-        ));
-        // bow-tie
-        commands.spawn((
-            Mesh3d(meshes.add(Cuboid::new(0.22, 0.09, 0.08))),
-            MeshMaterial3d(vest.clone()),
-            Transform::from_xyz(bx, floor_y + 2.92, bbz + 0.4),
-        ));
-        // head + hair
-        commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(0.34))),
-            MeshMaterial3d(skin.clone()),
-            Transform::from_xyz(bx, floor_y + 3.32, bbz + 0.05),
-        ));
-        commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(0.36))),
-            MeshMaterial3d(hair.clone()),
-            Transform::from_xyz(bx, floor_y + 3.52, bbz + 0.0)
-                .with_scale(Vec3::new(1.0, 0.6, 1.0)),
-        ));
-        // two arms resting toward the counter
-        for s in [-1.0_f32, 1.0] {
-            commands.spawn((
-                Mesh3d(meshes.add(Cylinder::new(0.12, 1.1))),
-                MeshMaterial3d(shirt.clone()),
-                Transform::from_xyz(bx + s * 0.5, floor_y + 2.0, bbz + 0.25)
-                    .with_rotation(Quat::from_rotation_z(s * 0.5) * Quat::from_rotation_x(0.6)),
-            ));
-        }
     }
 
     // --- clutter on the bar top: coasters, glasses, a beer tap ---
@@ -2903,6 +2870,28 @@ fn hud(
 }
 
 /// When the showdown settles, the winner(s) cheer: a hop + their voice.
+/// Idle wobble + camera-facing for Bubble the bartender (like the players).
+fn bar_standee(
+    time: Res<Time>,
+    camera: Query<&Transform, (With<Camera3d>, Without<BarStandee>)>,
+    mut q: Query<(&BarStandee, &mut Transform)>,
+) {
+    let Some(cam) = camera.iter().next() else {
+        return;
+    };
+    let cam_pos = cam.translation;
+    let step = (time.elapsed_secs() * 4.0).floor();
+    for (b, mut t) in &mut q {
+        let nx = hash11(b.seed * 1.3 + step * 0.0137) * 2.0 - 1.0;
+        let ny = hash11(b.seed * 2.1 + step * 0.0211) * 2.0 - 1.0;
+        let nlean = hash11(b.seed * 3.7 + step * 0.009) * 2.0 - 1.0;
+        let pos = b.base + Vec3::new(nx * 0.02, ny * 0.02, 0.0);
+        t.translation = pos;
+        t.look_at(Vec3::new(cam_pos.x, pos.y, cam_pos.z), Vec3::Y);
+        t.rotate_local_z(nlean * 0.01);
+    }
+}
+
 /// Bob the single turn-arrow above whoever's turn it is (hidden otherwise).
 fn turn_arrow(
     time: Res<Time>,
