@@ -47,9 +47,13 @@ struct Standee {
 #[derive(Component)]
 struct SeatVisual(usize);
 
-/// Tags one of the two bottom-left UI hole-card images for the human.
+/// One of the two bottom-left UI hole-card images for the human. `t` ramps
+/// 0->1 to slide the card from the table up to its resting corner spot.
 #[derive(Component)]
-struct HoleCardUi(usize);
+struct HoleCardUi {
+    slot: usize,
+    t: f32,
+}
 
 /// The bottom-right "Your money" counter.
 #[derive(Component)]
@@ -210,9 +214,9 @@ impl SfxRng {
             Some(&v[self.next_u32() as usize % v.len()])
         }
     }
-    /// A small (pitch, volume) variation to keep repeats from sounding identical.
+    /// A (pitch, volume) variation so repeats don't sound identical.
     fn jitter(&mut self) -> (f32, f32) {
-        (0.93 + self.unit() * 0.14, 0.78 + self.unit() * 0.22)
+        (0.82 + self.unit() * 0.36, 0.6 + self.unit() * 0.4)
     }
 }
 
@@ -1264,7 +1268,9 @@ fn setup(
     // The deck: a face-down stack of cards waiting to be dealt, by the dealer.
     let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     for k in 0..16 {
-        let base = Vec3::new(-3.5, felt_top + 0.02 + k as f32 * 0.012, -1.4);
+        // Dealer's deck, parked at the bottom-right of the felt (out of the way
+        // of the left-seat players' cards).
+        let base = Vec3::new(3.8, felt_top + 0.02 + k as f32 * 0.012, 1.7);
         commands.spawn((
             Mesh3d(card_quad.clone()),
             MeshMaterial3d(card_back.clone()),
@@ -1413,7 +1419,7 @@ fn setup(
                 height: Val::Px(156.0),
                 ..default()
             },
-            HoleCardUi(k),
+            HoleCardUi { slot: k, t: 0.0 },
         ));
     }
 
@@ -1716,20 +1722,52 @@ fn standee_system(
     }
 }
 
-/// Show the human's two hole cards as a flat 2D overlay in the bottom-left.
+/// Show the human's two hole cards as a 2D overlay. When a hand is dealt they
+/// slide from the table (where they were dealt) up to their resting spot in the
+/// bottom-left corner.
 fn human_cards_ui(
+    time: Res<Time>,
     poker: Res<Poker>,
     asset_server: Res<AssetServer>,
-    mut q: Query<(&HoleCardUi, &mut ImageNode, &mut Visibility)>,
+    camera: Query<(&Camera, &GlobalTransform)>,
+    windows: Query<&Window>,
+    mut q: Query<(&mut HoleCardUi, &mut Node, &mut ImageNode, &mut Visibility)>,
 ) {
+    const CW: f32 = 112.0;
+    const CH: f32 = 156.0;
     let human = &poker.game.players[0];
-    for (slot, mut img, mut vis) in &mut q {
-        if human.in_hand() && !poker.dealing {
-            img.image = asset_server.load(format!("cards/{}.png", human.hole[slot.0].code()));
-            *vis = Visibility::Visible;
-        } else {
+    let show = human.in_hand() && !poker.dealing;
+    let cam = camera.single().ok();
+    let win_h = windows.single().map(|w| w.height()).unwrap_or(760.0);
+
+    for (mut hc, mut node, mut img, mut vis) in &mut q {
+        if !show {
             *vis = Visibility::Hidden;
+            hc.t = 0.0; // re-arm the slide for the next hand
+            continue;
         }
+        *vis = Visibility::Visible;
+        img.image = asset_server.load(format!("cards/{}.png", human.hole[hc.slot].code()));
+        hc.t = (hc.t + time.delta_secs() * 3.5).min(1.0);
+        let e = hc.t * hc.t * (3.0 - 2.0 * hc.t); // smoothstep
+
+        // Resting spot in the bottom-left.
+        let rest_left = 22.0 + hc.slot as f32 * 86.0;
+        let rest_bottom = 20.0;
+
+        // Start spot: where the card was dealt on the table, projected to screen.
+        let off = (hc.slot as f32 - 0.5) * 0.46;
+        let world = Vec3::new(-off, poker.felt_top + 0.02, poker.rz * 0.72);
+        let (start_left, start_bottom) = match cam {
+            Some((c, ct)) => match c.world_to_viewport(ct, world) {
+                Ok(p) => (p.x - CW / 2.0, win_h - p.y - CH / 2.0),
+                Err(_) => (rest_left, rest_bottom),
+            },
+            None => (rest_left, rest_bottom),
+        };
+
+        node.left = Val::Px(start_left + (rest_left - start_left) * e);
+        node.bottom = Val::Px(start_bottom + (rest_bottom - start_bottom) * e);
     }
 }
 
@@ -1946,7 +1984,7 @@ fn deal_system(
     // --- kick off a new deal ---
     if poker.pending_deal && !poker.dealing {
         poker.pending_deal = false;
-        let from = Vec3::new(-3.5, poker.felt_top + 0.21, -1.4);
+        let from = Vec3::new(3.8, poker.felt_top + 0.21, 1.7);
         let n = poker.game.players.len();
         let mut order = Vec::new();
         for i in 1..=n {
