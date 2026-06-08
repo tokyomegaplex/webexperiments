@@ -137,6 +137,13 @@ struct Poker {
     deal_end: f32,
     /// Last seat we played a turn voice for (so we only play on a change).
     last_actor: usize,
+    /// 0..1 ramp that stands the cards up at showdown.
+    showdown_raise: f32,
+    /// How many community cards have finished their deal-in animation.
+    comm_shown: usize,
+    /// A community-card deal-in animation is playing; ends at `comm_end`.
+    comm_anim: bool,
+    comm_end: f32,
     log: String,
 }
 
@@ -350,7 +357,6 @@ fn build_poker() -> Poker {
                 }
                 game.start_hand();
             } else if want_showdown {
-                let seat = game.to_act;
                 game.apply(Action::Call); // everyone calls down to showdown
             } else if game.to_act == 0 {
                 if game.community.len() >= 3 {
@@ -390,6 +396,10 @@ fn build_poker() -> Poker {
         deal_start: 0.0,
         deal_end: 0.0,
         last_actor: usize::MAX,
+        showdown_raise: 0.0,
+        comm_shown: 0,
+        comm_anim: false,
+        comm_end: 0.0,
         log: "New hand".to_string(),
     }
 }
@@ -637,8 +647,9 @@ fn setup(
             unlit: true,
             ..default()
         })),
-        Transform::from_xyz(0.0, felt_top + 0.005, -0.3)
-            .with_scale(Vec3::new(rx * 0.6, 1.0, rz * 0.58)),
+        // A small ring around the pot, kept behind the community cards.
+        Transform::from_xyz(0.0, felt_top + 0.005, -0.55)
+            .with_scale(Vec3::new(rx * 0.3, 1.0, rz * 0.26)),
     ));
 
     // --- pedestal down to the floor ---
@@ -1936,8 +1947,8 @@ fn auto_play(
     if poker.paused {
         return;
     }
-    // Wait while a hand is being dealt (handled by deal_system).
-    if poker.dealing || poker.pending_deal {
+    // Wait while a hand or street is being dealt (handled by deal_system).
+    if poker.dealing || poker.pending_deal || poker.comm_anim {
         return;
     }
     let dt = time.delta();
@@ -1977,7 +1988,7 @@ fn turn_sounds(
     mut rng: ResMut<SfxRng>,
     mut standees: Query<&mut Standee>,
 ) {
-    if poker.paused || poker.dealing || poker.pending_deal {
+    if poker.paused || poker.dealing || poker.pending_deal || poker.comm_anim {
         return;
     }
     if poker.game.street == Street::HandOver {
@@ -2011,19 +2022,38 @@ fn deal_system(
     assets: Res<PokerAssets>,
     sfx: Res<Sfx>,
     mut rng: ResMut<SfxRng>,
+    mut faces: ResMut<CardFaces>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
     mut q_deal: Query<(Entity, &mut DealingCard, &mut Transform), Without<DeckCard>>,
     mut q_deck: Query<(&DeckCard, &mut Transform), Without<DealingCard>>,
 ) {
+    let now = time.elapsed_secs();
+    let dt = time.delta_secs();
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let deck_pos = Vec3::new(3.8, poker.felt_top + 0.21, 1.7);
+
+    // Ramp the showdown card-raise (snap instantly when paused for screenshots).
+    let target = if poker.game.street == Street::HandOver {
+        1.0
+    } else {
+        0.0
+    };
+    let speed = if poker.paused { 100.0 } else { 4.5 };
+    let nr = poker.showdown_raise + (target - poker.showdown_raise).clamp(-dt * speed, dt * speed);
+    if (nr - poker.showdown_raise).abs() > 0.001 {
+        poker.showdown_raise = nr;
+        needs.0 = true;
+    }
+
     if poker.paused {
         return;
     }
-    let now = time.elapsed_secs();
-    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
 
-    // --- kick off a new deal ---
+    // --- kick off the hole-card deal for a new hand ---
     if poker.pending_deal && !poker.dealing {
         poker.pending_deal = false;
-        let from = Vec3::new(3.8, poker.felt_top + 0.21, 1.7);
+        poker.comm_shown = 0;
         let n = poker.game.players.len();
         let mut order = Vec::new();
         for i in 1..=n {
@@ -2048,20 +2078,7 @@ fn deal_system(
                 );
                 let start = now + shuffle + (pass * order.len() + idx) as f32 * step;
                 last = last.max(start + dur);
-                commands.spawn((
-                    Mesh3d(assets.card_quad.clone()),
-                    MeshMaterial3d(assets.card_back.clone()),
-                    Transform::from_translation(from)
-                        .with_rotation(flat)
-                        .with_scale(Vec3::splat(0.78)),
-                    DealingCard {
-                        from,
-                        to,
-                        start,
-                        dur,
-                        played: false,
-                    },
-                ));
+                spawn_dealing_card(&mut commands, &assets, assets.card_back.clone(), deck_pos, to, start, dur, flat);
             }
         }
         poker.dealing = true;
@@ -2071,46 +2088,102 @@ fn deal_system(
         play_sfx(&mut commands, &sfx.deal, &mut rng);
     }
 
-    if !poker.dealing {
-        return;
+    // --- kick off a community-card deal-in (flop/turn/river) ---
+    if !poker.dealing && !poker.comm_anim && poker.comm_shown < poker.game.community.len() {
+        let total = poker.game.community.len();
+        let step = 0.13_f32;
+        let dur = 0.24_f32;
+        let mut last = now;
+        for i in poker.comm_shown..total {
+            let to = Vec3::new(
+                community_x(i, total as f32),
+                poker.felt_top + 0.026,
+                COMMUNITY_Z,
+            );
+            let start = now + (i - poker.comm_shown) as f32 * step;
+            last = last.max(start + dur);
+            let code = poker.game.community[i].code();
+            let mat = face_material(&mut faces, &mut materials, &asset_server, &code);
+            spawn_dealing_card(&mut commands, &assets, mat, deck_pos, to, start, dur, flat);
+        }
+        poker.comm_anim = true;
+        poker.comm_end = last + 0.05;
+        needs.0 = true;
+        play_sfx(&mut commands, &sfx.card, &mut rng);
     }
 
-    // --- shuffle jiggle on the deck until the first card flies ---
-    let shuffling = now < poker.deal_start;
-    for (deck, mut tr) in &mut q_deck {
-        if shuffling {
-            let j = hash11(deck.base.y * 53.0 + now * 30.0) - 0.5;
-            let k = hash11(deck.base.y * 91.0 + now * 27.0) - 0.5;
-            tr.translation = deck.base + Vec3::new(j * 0.12, 0.0, k * 0.12);
-        } else {
-            tr.translation = deck.base;
+    // --- deck shuffle jiggle during the hole deal ---
+    if poker.dealing {
+        let shuffling = now < poker.deal_start;
+        for (deck, mut tr) in &mut q_deck {
+            if shuffling {
+                let j = hash11(deck.base.y * 53.0 + now * 30.0) - 0.5;
+                let k = hash11(deck.base.y * 91.0 + now * 27.0) - 0.5;
+                tr.translation = deck.base + Vec3::new(j * 0.12, 0.0, k * 0.12);
+            } else {
+                tr.translation = deck.base;
+            }
         }
     }
 
-    // --- slide the dealt cards out ---
-    for (_, mut dc, mut tr) in &mut q_deal {
+    // --- slide every flying card from the deck to its target ---
+    for (e, mut dc, mut tr) in &mut q_deal {
         if now >= dc.start && !dc.played {
             dc.played = true;
             play_sfx(&mut commands, &sfx.card, &mut rng);
         }
+        if now >= dc.start + dc.dur + 0.04 {
+            commands.entity(e).despawn();
+            continue;
+        }
         let p = ((now - dc.start) / dc.dur).clamp(0.0, 1.0);
-        let e = p * p * (3.0 - 2.0 * p); // smoothstep
-        let mut pos = dc.from.lerp(dc.to, e);
-        pos.y += (e * std::f32::consts::PI).sin() * 0.35; // little arc
+        let e2 = p * p * (3.0 - 2.0 * p); // smoothstep
+        let mut pos = dc.from.lerp(dc.to, e2);
+        pos.y += (e2 * std::f32::consts::PI).sin() * 0.35; // little arc
         tr.translation = pos;
     }
 
-    // --- finish ---
-    if now >= poker.deal_end {
+    // --- finish the animations ---
+    if poker.dealing && now >= poker.deal_end {
         poker.dealing = false;
-        for (e, _, _) in &q_deal {
-            commands.entity(e).despawn();
-        }
         for (deck, mut tr) in &mut q_deck {
             tr.translation = deck.base;
         }
         needs.0 = true;
     }
+    if poker.comm_anim && now >= poker.comm_end {
+        poker.comm_anim = false;
+        poker.comm_shown = poker.game.community.len();
+        needs.0 = true;
+    }
+}
+
+/// Spawn one card flying from the deck to a target, for the deal animations.
+#[allow(clippy::too_many_arguments)]
+fn spawn_dealing_card(
+    commands: &mut Commands,
+    assets: &PokerAssets,
+    mat: Handle<StandardMaterial>,
+    from: Vec3,
+    to: Vec3,
+    start: f32,
+    dur: f32,
+    flat: Quat,
+) {
+    commands.spawn((
+        Mesh3d(assets.card_quad.clone()),
+        MeshMaterial3d(mat),
+        Transform::from_translation(from)
+            .with_rotation(flat)
+            .with_scale(Vec3::splat(0.8)),
+        DealingCard {
+            from,
+            to,
+            start,
+            dur,
+            played: false,
+        },
+    ));
 }
 
 /// The raise amount currently selected on the slider (clamped legal).
@@ -2175,6 +2248,7 @@ fn betting_ui(
 ) {
     let g = &poker.game;
     let my_turn = !poker.dealing
+        && !poker.comm_anim
         && g.street != Street::HandOver
         && g.to_act == 0
         && !g.players[0].folded
@@ -2278,6 +2352,12 @@ fn describe_action(game: &Game, seat: usize, action: Action) -> String {
     }
 }
 
+/// Where the community cards sit (z toward the player) and their x layout.
+const COMMUNITY_Z: f32 = 1.3;
+fn community_x(i: usize, count: f32) -> f32 {
+    (i as f32 - (count - 1.0) / 2.0) * 1.2
+}
+
 /// Rebuild all engine-driven props (cards, chips, dealer button) from the
 /// current game state whenever something changed.
 fn redraw_table(
@@ -2304,16 +2384,34 @@ fn redraw_table(
     // read right-side-up for the player sitting at the near (+Z) edge.
     let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
 
-    // At showdown the cards flip up so the hands are clearly readable.
+    // At showdown the cards flip up (animated) so the hands read clearly.
     let showdown = g.street == Street::HandOver;
-    let card_tilt = if showdown { 0.95 } else { 0.0 };
+    let card_tilt = poker.showdown_raise * 0.95;
 
     // Community cards: in the open space toward the player, bigger and centred.
+    // While dealing in, the still-flying ones aren't drawn here.
+    let shown = if poker.paused {
+        g.community.len()
+    } else {
+        poker.comm_shown.min(g.community.len())
+    };
     let c = g.community.len() as f32;
-    for (i, card) in g.community.iter().enumerate() {
-        let x = (i as f32 - (c - 1.0) / 2.0) * 1.2;
+    for (i, card) in g.community.iter().take(shown).enumerate() {
+        let x = community_x(i, c);
+        let yaw = (hash11(i as f32 * 12.9 + 3.0) - 0.5) * 0.22;
         let mat = face_material(&mut faces, &mut materials, &asset_server, &card.code());
-        spawn_table_card(&mut commands, &assets, mat, flat, x, 0.9, ft, 1.4, card_tilt);
+        spawn_table_card(
+            &mut commands,
+            &assets,
+            mat,
+            flat,
+            x,
+            COMMUNITY_Z,
+            ft,
+            1.4,
+            card_tilt,
+            yaw,
+        );
     }
 
     // The collected pot (everything except the current street's live bets).
@@ -2328,9 +2426,10 @@ fn redraw_table(
         let a = poker.seat_angles[s];
         let (cosv, sinv) = (a.cos(), a.sin());
 
+        // Bets sit closer to each player (out of the centre / off the cards).
         if p.bet > 0 {
-            let bx = cosv * poker.rx * 0.5;
-            let bz = sinv * poker.rz * 0.5;
+            let bx = cosv * poker.rx * 0.64;
+            let bz = sinv * poker.rz * 0.64;
             spawn_chips(&mut commands, &assets, bx, bz, ft, p.bet, s);
         }
 
@@ -2342,6 +2441,7 @@ fn redraw_table(
             let (tx, tz) = (-sinv, cosv); // tangent, to lay the two cards side by side
             for (k, card) in p.hole.iter().enumerate() {
                 let off = (k as f32 - 0.5) * 0.46;
+                let yaw = (hash11(s as f32 * 7.0 + k as f32 * 3.1) - 0.5) * 0.22;
                 let mat = if showdown {
                     face_material(&mut faces, &mut materials, &asset_server, &card.code())
                 } else {
@@ -2357,6 +2457,7 @@ fn redraw_table(
                     ft,
                     0.85,
                     card_tilt,
+                    yaw,
                 );
             }
         }
@@ -2421,16 +2522,19 @@ fn spawn_table_card(
     felt_top: f32,
     scale: f32,
     tilt: f32,
+    yaw: f32,
 ) {
     // Optionally stand the card up toward the camera (used at showdown so the
-    // hands are clearly readable); `tilt == 0` lies flat on the felt.
+    // hands are clearly readable); `tilt == 0` lies flat on the felt. `yaw` is a
+    // small random spin so the cards don't look too perfectly aligned.
+    let spin = Quat::from_rotation_y(yaw);
     let (rot, lift) = if tilt > 0.0 {
         (
-            Quat::from_rotation_x(tilt) * flat,
+            spin * Quat::from_rotation_x(tilt) * flat,
             1.08 * scale / 2.0 * tilt.sin(),
         )
     } else {
-        (flat, 0.0)
+        (spin * flat, 0.0)
     };
 
     // Soft shadow on the felt beneath the card.
@@ -2438,14 +2542,14 @@ fn spawn_table_card(
         Mesh3d(assets.card_quad.clone()),
         MeshMaterial3d(assets.shadow_mat.clone()),
         Transform::from_xyz(x + 0.05, felt_top + 0.012, z - 0.08)
-            .with_rotation(flat)
+            .with_rotation(spin * flat)
             .with_scale(Vec3::new(scale * 1.12, 1.0, scale * 1.12)),
         TableProp,
     ));
     commands.spawn((
         Mesh3d(assets.card_quad.clone()),
         MeshMaterial3d(mat),
-        Transform::from_xyz(x, felt_top + 0.022 + lift, z)
+        Transform::from_xyz(x, felt_top + 0.026 + lift, z)
             .with_rotation(rot)
             .with_scale(Vec3::splat(scale)),
         TableProp,
