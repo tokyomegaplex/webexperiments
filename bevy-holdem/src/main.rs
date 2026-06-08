@@ -120,6 +120,7 @@ struct PokerAssets {
     card_back: Handle<StandardMaterial>,
     button_mat: Handle<StandardMaterial>,
     ring_mat: Handle<StandardMaterial>,
+    shadow_mat: Handle<StandardMaterial>,
     chip_mats: Vec<Handle<StandardMaterial>>,
 }
 
@@ -1191,6 +1192,13 @@ fn setup(
             unlit: true,
             ..default()
         }),
+        shadow_mat: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(asset_server.load("cards/shadow.png")),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        }),
         chip_mats: chip_mats.clone(),
     });
 
@@ -1806,19 +1814,12 @@ fn redraw_table(
     let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
         * Quat::from_rotation_z(std::f32::consts::PI);
 
-    // Community cards, centred and a touch larger.
+    // Community cards, centred, a touch larger, and tilted up toward the camera.
     let c = g.community.len() as f32;
     for (i, card) in g.community.iter().enumerate() {
         let x = (i as f32 - (c - 1.0) / 2.0) * 1.06;
         let mat = face_material(&mut faces, &mut materials, &asset_server, &card.code());
-        commands.spawn((
-            Mesh3d(assets.card_quad.clone()),
-            MeshMaterial3d(mat),
-            Transform::from_xyz(x, ft + 0.02, -0.7)
-                .with_rotation(flat)
-                .with_scale(Vec3::splat(1.25)),
-            TableProp,
-        ));
+        spawn_table_card(&mut commands, &assets, mat, flat, x, -0.7, ft, 1.25);
     }
 
     // The collected pot (everything except the current street's live bets).
@@ -1852,14 +1853,16 @@ fn redraw_table(
                 } else {
                     assets.card_back.clone()
                 };
-                commands.spawn((
-                    Mesh3d(assets.card_quad.clone()),
-                    MeshMaterial3d(mat),
-                    Transform::from_xyz(hx + tx * off, ft + 0.02, hz + tz * off)
-                        .with_rotation(flat)
-                        .with_scale(Vec3::splat(0.78)),
-                    TableProp,
-                ));
+                spawn_table_card(
+                    &mut commands,
+                    &assets,
+                    mat,
+                    flat,
+                    hx + tx * off,
+                    hz + tz * off,
+                    ft,
+                    0.78,
+                );
             }
         }
     }
@@ -1911,6 +1914,42 @@ fn face_material(
 }
 
 /// A small banded chip stack whose height scales with the chip amount.
+/// Spawn a table card tilted up toward the camera (so it's easy to read) with
+/// a soft shadow on the felt beneath it. `flat` is the lie-flat orientation.
+fn spawn_table_card(
+    commands: &mut Commands,
+    assets: &PokerAssets,
+    mat: Handle<StandardMaterial>,
+    flat: Quat,
+    x: f32,
+    z: f32,
+    felt_top: f32,
+    scale: f32,
+) {
+    let tilt = 0.95_f32; // radians up from the table toward the camera
+    let up = Quat::from_rotation_x(tilt) * flat;
+    let lift = 1.08 * scale / 2.0 * tilt.sin(); // raise so the base sits on felt
+
+    // Soft shadow on the felt.
+    commands.spawn((
+        Mesh3d(assets.card_quad.clone()),
+        MeshMaterial3d(assets.shadow_mat.clone()),
+        Transform::from_xyz(x, felt_top + 0.012, z - 0.12)
+            .with_rotation(flat)
+            .with_scale(Vec3::new(scale * 1.15, 1.0, scale * 1.2)),
+        TableProp,
+    ));
+    // The tilted card.
+    commands.spawn((
+        Mesh3d(assets.card_quad.clone()),
+        MeshMaterial3d(mat),
+        Transform::from_xyz(x, felt_top + 0.02 + lift, z)
+            .with_rotation(up)
+            .with_scale(Vec3::splat(scale)),
+        TableProp,
+    ));
+}
+
 fn spawn_chips(
     commands: &mut Commands,
     assets: &PokerAssets,
