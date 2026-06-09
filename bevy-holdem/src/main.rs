@@ -231,7 +231,7 @@ struct Sfx {
     chips: Vec<Handle<AudioSource>>,
     card: Handle<AudioSource>,
     knock: Handle<AudioSource>,
-    deal: Handle<AudioSource>,
+    deal: Vec<Handle<AudioSource>>,
     win_small: Vec<Handle<AudioSource>>,
     win_medium: Vec<Handle<AudioSource>>,
     win_big: Vec<Handle<AudioSource>>,
@@ -1105,18 +1105,15 @@ fn setup(
     });
     // One material per chip denomination, indexed to match `CHIP_DENOMS`:
     // [0]=$5 red, [1]=$10 blue, [2]=$20 green, [3]=$50 orange, [4]=$100 purple.
-    let chip_colors = [
-        Color::srgb_u8(200, 46, 46),
-        Color::srgb_u8(44, 92, 200),
-        Color::srgb_u8(34, 150, 84),
-        Color::srgb_u8(232, 150, 40),
-        Color::srgb_u8(150, 70, 190),
-    ];
-    let chip_mats: Vec<_> = chip_colors
+    // Each carries a classic chip-face texture (coloured disc, cream edge spots,
+    // dashed ring, denomination) baked into the art, so the colour comes from the
+    // texture rather than a flat tint.
+    let chip_textures = ["chip_5.png", "chip_10.png", "chip_20.png", "chip_50.png", "chip_100.png"];
+    let chip_mats: Vec<_> = chip_textures
         .iter()
-        .map(|c| materials.add(StandardMaterial {
-            base_color: *c,
-            perceptual_roughness: 0.5,
+        .map(|tex| materials.add(StandardMaterial {
+            base_color_texture: Some(asset_server.load(*tex)),
+            perceptual_roughness: 0.55,
             ..default()
         }))
         .collect();
@@ -1397,7 +1394,7 @@ fn setup(
             chips: or_else(pick_prefix("chip"), "sfx/chip.wav"),
             card: asset_server.load("sfx/card.wav"),
             knock: asset_server.load("sfx/knock.wav"),
-            deal: asset_server.load("sfx/deal.wav"),
+            deal: or_else(pick_prefix("deal"), "sfx/deal.wav"),
             win_small: or_else(pick_prefix("winsmall"), "sfx/win.wav"),
             win_medium: or_else(pick_prefix("winmedium"), "sfx/win.wav"),
             win_big: or_else(pick_prefix("winbig"), "sfx/win.wav"),
@@ -2257,7 +2254,8 @@ fn deal_system(
         poker.deal_start = now + shuffle;
         poker.deal_end = last + 0.05;
         needs.0 = true;
-        play_sfx(&mut commands, &sfx.deal, &mut rng);
+        let deal = rng.pick(&sfx.deal).cloned().unwrap_or_default();
+        play_sfx(&mut commands, &deal, &mut rng);
     }
 
     // --- kick off a community-card deal-in (flop/turn/river) ---
@@ -2379,20 +2377,43 @@ fn slider_amount(g: &Game, frac: f32) -> u32 {
 }
 
 /// Drag the bet-size slider and reflect it in the fill + handle position.
+///
+/// We compute the cursor's position against the track's real on-screen rect
+/// (from its `ComputedNode` + `GlobalTransform`) rather than trusting a hover
+/// flag: pressing anywhere on the bar — including right on the coin — grabs it,
+/// and a drag latch keeps it following the cursor until the button is released,
+/// even if the pointer slides off the bar vertically.
 fn slider_system(
     mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
     mut slider: ResMut<BetSlider>,
-    track: Query<&RelativeCursorPosition, With<SliderTrack>>,
+    track: Query<(&ComputedNode, &GlobalTransform), With<SliderTrack>>,
     mut fill: Query<&mut Node, (With<SliderFill>, Without<SliderHandle>)>,
     mut handle: Query<&mut Node, (With<SliderHandle>, Without<SliderFill>)>,
+    mut dragging: Local<bool>,
 ) {
-    if mouse.pressed(MouseButton::Left) {
-        if let Ok(rel) = track.single() {
-            if let Some(n) = rel.normalized {
-                // Cursor x is across the padded track; map it onto the coin's
-                // travel range (which is inset by the coin's half-width).
-                let px = n.x * SLIDER_TRACK_W - SLIDER_PAD;
-                slider.frac = (px / SLIDER_W).clamp(0.0, 1.0);
+    if !mouse.pressed(MouseButton::Left) {
+        *dragging = false;
+    }
+    if let (Ok(window), Ok((cn, gt))) = (windows.single(), track.single()) {
+        if let Some(cursor) = window.cursor_position() {
+            // ComputedNode/GlobalTransform are in physical px; the cursor is in
+            // logical px — convert the track rect to logical px to compare.
+            let sf = window.scale_factor().max(0.0001);
+            let size = cn.size() / sf;
+            let center = gt.translation().truncate() / sf;
+            let min = center - size / 2.0;
+            let local = cursor - min; // cursor relative to the track's top-left
+            let over = local.x >= 0.0
+                && local.x <= size.x
+                && local.y >= -8.0
+                && local.y <= size.y + 8.0;
+            if mouse.just_pressed(MouseButton::Left) && over {
+                *dragging = true;
+            }
+            if *dragging {
+                // Map x onto the coin's travel range (inset by its half-width).
+                slider.frac = ((local.x - SLIDER_PAD) / SLIDER_W).clamp(0.0, 1.0);
             }
         }
     }
