@@ -95,6 +95,12 @@ struct FlyingChip {
     axis: Vec3,     // tumble axis (perpendicular to the throw, in the table plane)
 }
 
+/// A chip that has landed in the pot and now rests in the middle of the table.
+/// These persist (they're not `TableProp`, so a redraw doesn't wipe them) and
+/// accumulate as players bet; they're cleared when the next hand is dealt.
+#[derive(Component)]
+struct PotChip;
+
 /// A betting action button. `CheckFold` shows "Check" when checking is legal
 /// (and never lets you fold for free) and "Fold" when facing a bet.
 #[derive(Component, Clone, Copy)]
@@ -447,8 +453,12 @@ fn build_poker() -> Poker {
 
 fn screenshot_system(mut state: ResMut<ShotState>, mut commands: Commands) {
     state.frame += 1;
-    // In DEAL_DEMO, capture earlier to catch cards mid-flight.
-    let cap = if env::var("DEAL_DEMO").is_ok() { 6 } else { 30 };
+    // In DEAL_DEMO, capture earlier to catch cards mid-flight. CAP_FRAME lets a
+    // headless live run capture a later frame (e.g. after some betting).
+    let cap = env::var("CAP_FRAME")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(if env::var("DEAL_DEMO").is_ok() { 6 } else { 30 });
     if state.frame == cap {
         commands
             .spawn(Screenshot::primary_window())
@@ -2032,41 +2042,7 @@ fn do_action(
         let a = poker.seat_angles[seat];
         let ft = poker.felt_top;
         let from = Vec3::new(a.cos() * poker.rx * 0.78, ft + 0.06, a.sin() * poker.rz * 0.78);
-        let to_center = Vec3::new(0.0, ft + 0.06, -0.55);
-        // Tumble axis is perpendicular to the throw direction, in the table plane.
-        let flat_dir = Vec3::new(to_center.x - from.x, 0.0, to_center.z - from.z)
-            .normalize_or_zero();
-        let axis = Vec3::new(-flat_dir.z, 0.0, flat_dir.x);
-
-        // One flying chip per physical chip in the denomination breakdown,
-        // capped so a big bet doesn't spray dozens of chips.
-        let mut colors: Vec<usize> = Vec::new();
-        for (color, count) in chip_breakdown(thrown) {
-            for _ in 0..count.min(4) {
-                colors.push(color);
-            }
-        }
-        if colors.len() > 10 {
-            colors.truncate(10);
-        }
-        for (k, color) in colors.iter().enumerate() {
-            let jitter = Vec3::new((rng.unit() - 0.5) * 0.5, 0.0, (rng.unit() - 0.5) * 0.5);
-            let turns = if k % 2 == 0 { 2.0 } else { 3.0 }; // whole turns → lands flat
-            commands.spawn((
-                Mesh3d(assets.chip_mesh.clone()),
-                MeshMaterial3d(assets.chip_mats[*color].clone()),
-                Transform::from_translation(from).with_scale(Vec3::new(0.22, 0.04, 0.22)),
-                FlyingChip {
-                    from,
-                    to: to_center + jitter,
-                    start: now + k as f32 * 0.06,
-                    dur: 0.42,
-                    arc: 0.7 + rng.unit() * 0.3,
-                    spin: turns * std::f32::consts::TAU,
-                    axis,
-                },
-            ));
-        }
+        throw_chips_to_pot(commands, assets, from, ft, thrown, now, rng);
     }
 
     let chip = rng.pick(&sfx.chips).cloned().unwrap_or_default();
@@ -2186,6 +2162,7 @@ fn deal_system(
     asset_server: Res<AssetServer>,
     mut q_deal: Query<(Entity, &mut DealingCard, &mut Transform), Without<DeckCard>>,
     mut q_deck: Query<(&DeckCard, &mut Transform), Without<DealingCard>>,
+    q_pot: Query<Entity, With<PotChip>>,
 ) {
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
@@ -2213,6 +2190,10 @@ fn deal_system(
     if poker.pending_deal && !poker.dealing {
         poker.pending_deal = false;
         poker.comm_shown = 0;
+        // Sweep last hand's pot chips off the table before the new deal.
+        for e in &q_pot {
+            commands.entity(e).despawn();
+        }
         let n = poker.game.players.len();
         let mut order = Vec::new();
         for i in 1..=n {
@@ -2256,6 +2237,19 @@ fn deal_system(
         needs.0 = true;
         let deal = rng.pick(&sfx.deal).cloned().unwrap_or_default();
         play_sfx(&mut commands, &deal, &mut rng);
+
+        // The blinds (anything already committed) fly into the pot as the deal
+        // finishes, so the pot pile starts off showing them.
+        let ft = poker.felt_top;
+        for s in 0..n {
+            let committed = poker.game.players[s].committed;
+            if committed > 0 {
+                let a = poker.seat_angles[s];
+                let from =
+                    Vec3::new(a.cos() * poker.rx * 0.78, ft + 0.06, a.sin() * poker.rz * 0.78);
+                throw_chips_to_pot(&mut commands, &assets, from, ft, committed, last, &mut rng);
+            }
+        }
     }
 
     // --- kick off a community-card deal-in (flop/turn/river) ---
@@ -2672,9 +2666,12 @@ fn redraw_table(
         );
     }
 
-    // The pot in the middle (everything committed so far), piles laid along x.
-    if g.pot() > 0 {
-        spawn_chips(&mut commands, &assets, 0.0, -0.55, ft, g.pot(), Vec2::new(1.0, 0.0));
+    // In live play the pot is shown by the actual chips thrown into the middle
+    // (they land and accumulate as `PotChip`s). When paused for a screenshot the
+    // game is fast-forwarded with no throw animations, so draw a static pile then
+    // so the pot is still visible.
+    if poker.paused && g.pot() > 0 {
+        spawn_chips(&mut commands, &assets, POT_CENTER.x, POT_CENTER.z, ft, g.pot(), Vec2::new(1.0, 0.0));
     }
 
     // Per-seat: stacks, hole cards, dealer button.
@@ -3047,6 +3044,57 @@ fn turn_arrow(
 }
 
 /// Move chips flying into the pot; despawn them when they land.
+/// Where the pot sits, in the middle of the table (toward the far side a touch).
+const POT_CENTER: Vec3 = Vec3::new(0.0, 0.0, -0.55);
+
+/// Throw `amount` worth of chips from `from` into the pot at the table centre.
+/// They arc, tumble, and (in `chip_fly`) land and stay as the growing pot pile.
+/// Shared by player bets and the blinds at the start of a hand.
+fn throw_chips_to_pot(
+    commands: &mut Commands,
+    assets: &PokerAssets,
+    from: Vec3,
+    felt_top: f32,
+    amount: u32,
+    now: f32,
+    rng: &mut SfxRng,
+) {
+    let to_center = Vec3::new(POT_CENTER.x, felt_top + 0.06, POT_CENTER.z);
+    // Tumble axis is perpendicular to the throw direction, in the table plane.
+    let flat_dir = Vec3::new(to_center.x - from.x, 0.0, to_center.z - from.z).normalize_or_zero();
+    let axis = Vec3::new(-flat_dir.z, 0.0, flat_dir.x);
+
+    // One flying chip per physical chip in the denomination breakdown, capped so
+    // a big bet doesn't spray dozens of chips.
+    let mut colors: Vec<usize> = Vec::new();
+    for (color, count) in chip_breakdown(amount) {
+        for _ in 0..count.min(4) {
+            colors.push(color);
+        }
+    }
+    if colors.len() > 10 {
+        colors.truncate(10);
+    }
+    for (k, color) in colors.iter().enumerate() {
+        let jitter = Vec3::new((rng.unit() - 0.5) * 0.6, 0.0, (rng.unit() - 0.5) * 0.6);
+        let turns = if k % 2 == 0 { 2.0 } else { 3.0 }; // whole turns → lands flat
+        commands.spawn((
+            Mesh3d(assets.chip_mesh.clone()),
+            MeshMaterial3d(assets.chip_mats[*color].clone()),
+            Transform::from_translation(from).with_scale(Vec3::new(0.18, 0.04, 0.18)),
+            FlyingChip {
+                from,
+                to: to_center + jitter,
+                start: now + k as f32 * 0.06,
+                dur: 0.42,
+                arc: 0.7 + rng.unit() * 0.3,
+                spin: turns * std::f32::consts::TAU,
+                axis,
+            },
+        ));
+    }
+}
+
 fn chip_fly(
     time: Res<Time>,
     mut commands: Commands,
@@ -3055,7 +3103,17 @@ fn chip_fly(
     let now = time.elapsed_secs();
     for (e, fc, mut tr) in &mut q {
         if now >= fc.start + fc.dur {
-            commands.entity(e).despawn();
+            // Landed: settle into the pot and stay there (becomes a PotChip so a
+            // table redraw won't wipe it). Rest flat with a random spin and a
+            // little height variation so the pile looks naturally tossed.
+            let ft = fc.to.y - 0.06;
+            let hh = hash11(fc.to.x * 31.7 + fc.to.z * 17.3);
+            *tr = Transform {
+                translation: Vec3::new(fc.to.x, ft + 0.024 + hh * 0.05, fc.to.z),
+                rotation: Quat::from_rotation_y(hh * std::f32::consts::TAU),
+                scale: Vec3::new(0.18, 0.04, 0.18),
+            };
+            commands.entity(e).remove::<FlyingChip>().insert(PotChip);
             continue;
         }
         if now < fc.start {
