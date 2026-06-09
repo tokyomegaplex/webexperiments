@@ -2909,11 +2909,27 @@ fn spawn_chips(
         let pz = cz + dir.y * woff + perp.y * doff;
         let height = count.min(18);
         for k in 0..height {
+            // Per-chip randomness so a stack looks hand-made, not machined: spin
+            // each chip a random amount around its axis (so the white edge spots
+            // never line up), nudge it slightly off-centre, and give it a faint
+            // lean. Seeded from its position so it's stable across redraws.
+            let seed = px * 13.1 + pz * 7.7 + k as f32 * 3.37;
+            let yaw = hash11(seed) * std::f32::consts::TAU;
+            let jx = (hash11(seed + 1.7) - 0.5) * 0.05;
+            let jz = (hash11(seed + 9.3) - 0.5) * 0.05;
+            let lean_x = (hash11(seed + 4.2) - 0.5) * 0.05;
+            let lean_z = (hash11(seed + 2.1) - 0.5) * 0.05;
+            let rot = Quat::from_rotation_y(yaw)
+                * Quat::from_rotation_x(lean_x)
+                * Quat::from_rotation_z(lean_z);
             commands.spawn((
                 Mesh3d(assets.chip_mesh.clone()),
                 MeshMaterial3d(assets.chip_mats[color].clone()),
-                Transform::from_xyz(px, felt_top + 0.022 + k as f32 * 0.045, pz)
-                    .with_scale(Vec3::new(0.18, 0.04, 0.18)),
+                Transform {
+                    translation: Vec3::new(px + jx, felt_top + 0.022 + k as f32 * 0.043, pz + jz),
+                    rotation: rot,
+                    scale: Vec3::new(0.18, 0.04, 0.18),
+                },
                 TableProp,
             ));
         }
