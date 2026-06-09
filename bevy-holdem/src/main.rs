@@ -82,13 +82,17 @@ struct BarStandee {
 #[derive(Component)]
 struct TurnArrow;
 
-/// A chip flying from a player into the pot when they bet.
+/// A chip flying from a player into the pot when they bet. Thrown with a
+/// parabolic arc, a tumble, and a small settle-bounce for a bit of fake physics.
 #[derive(Component)]
 struct FlyingChip {
     from: Vec3,
     to: Vec3,
     start: f32,
     dur: f32,
+    arc: f32,       // peak height of the throw
+    spin: f32,      // total tumble (radians) over the flight; lands flat
+    axis: Vec3,     // tumble axis (perpendicular to the throw, in the table plane)
 }
 
 /// A betting action button. `CheckFold` shows "Check" when checking is legal
@@ -1099,11 +1103,13 @@ fn setup(
         unlit: true,
         ..default()
     });
+    // One material per chip denomination, indexed to match `CHIP_DENOMS`:
+    // [0]=$5 red, [1]=$10 blue, [2]=$20 green, [3]=$50 orange, [4]=$100 purple.
     let chip_colors = [
         Color::srgb_u8(200, 46, 46),
         Color::srgb_u8(44, 92, 200),
         Color::srgb_u8(34, 150, 84),
-        Color::srgb_u8(232, 232, 224),
+        Color::srgb_u8(232, 150, 40),
         Color::srgb_u8(150, 70, 190),
     ];
     let chip_mats: Vec<_> = chip_colors
@@ -2019,29 +2025,45 @@ fn do_action(
     let pre_stack = poker.game.players[seat].stack;
     poker.game.apply(action);
 
-    // Chips the player just pushed in fly to the pot.
+    // Chips the player just pushed in are thrown into the pot, coloured by
+    // denomination and tumbling through the air with a little fake physics.
     let thrown = pre_stack.saturating_sub(poker.game.players[seat].stack);
     if thrown > 0 {
         let a = poker.seat_angles[seat];
         let ft = poker.felt_top;
         let from = Vec3::new(a.cos() * poker.rx * 0.78, ft + 0.06, a.sin() * poker.rz * 0.78);
-        let to = Vec3::new(0.0, ft + 0.06, -0.55);
-        let n = ((thrown as f32).sqrt() * 0.4).round().clamp(1.0, 6.0) as usize;
-        for k in 0..n {
-            let jitter = Vec3::new(
-                (rng.unit() - 0.5) * 0.25,
-                0.0,
-                (rng.unit() - 0.5) * 0.25,
-            );
+        let to_center = Vec3::new(0.0, ft + 0.06, -0.55);
+        // Tumble axis is perpendicular to the throw direction, in the table plane.
+        let flat_dir = Vec3::new(to_center.x - from.x, 0.0, to_center.z - from.z)
+            .normalize_or_zero();
+        let axis = Vec3::new(-flat_dir.z, 0.0, flat_dir.x);
+
+        // One flying chip per physical chip in the denomination breakdown,
+        // capped so a big bet doesn't spray dozens of chips.
+        let mut colors: Vec<usize> = Vec::new();
+        for (color, count) in chip_breakdown(thrown) {
+            for _ in 0..count.min(4) {
+                colors.push(color);
+            }
+        }
+        if colors.len() > 10 {
+            colors.truncate(10);
+        }
+        for (k, color) in colors.iter().enumerate() {
+            let jitter = Vec3::new((rng.unit() - 0.5) * 0.5, 0.0, (rng.unit() - 0.5) * 0.5);
+            let turns = if k % 2 == 0 { 2.0 } else { 3.0 }; // whole turns → lands flat
             commands.spawn((
                 Mesh3d(assets.chip_mesh.clone()),
-                MeshMaterial3d(assets.chip_mats[seat % assets.chip_mats.len()].clone()),
-                Transform::from_translation(from).with_scale(Vec3::new(0.24, 0.04, 0.24)),
+                MeshMaterial3d(assets.chip_mats[*color].clone()),
+                Transform::from_translation(from).with_scale(Vec3::new(0.22, 0.04, 0.22)),
                 FlyingChip {
                     from,
-                    to: to + jitter,
-                    start: now + k as f32 * 0.05,
-                    dur: 0.34,
+                    to: to_center + jitter,
+                    start: now + k as f32 * 0.06,
+                    dur: 0.42,
+                    arc: 0.7 + rng.unit() * 0.3,
+                    spin: turns * std::f32::consts::TAU,
+                    axis,
                 },
             ));
         }
@@ -2623,9 +2645,9 @@ fn redraw_table(
         );
     }
 
-    // The pot in the middle (everything committed so far).
+    // The pot in the middle (everything committed so far), piles laid along x.
     if g.pot() > 0 {
-        spawn_chips(&mut commands, &assets, 0.0, -0.55, ft, g.pot(), 3);
+        spawn_chips(&mut commands, &assets, 0.0, -0.55, ft, g.pot(), Vec2::new(1.0, 0.0));
     }
 
     // Per-seat: stacks, hole cards, dealer button.
@@ -2633,11 +2655,12 @@ fn redraw_table(
         let a = poker.seat_angles[s];
         let (cosv, sinv) = (a.cos(), a.sin());
 
-        // Each player's remaining stack, in front of their seat.
+        // Each player's remaining stack, in front of their seat. The piles
+        // spread along the seat's tangent so they sit in a tidy row on the rail.
         if p.stack > 0 {
             let bx = cosv * poker.rx * 0.92 + (-sinv) * 0.55;
             let bz = sinv * poker.rz * 0.92 + cosv * 0.55;
-            spawn_chips(&mut commands, &assets, bx, bz, ft, p.stack, s);
+            spawn_chips(&mut commands, &assets, bx, bz, ft, p.stack, Vec2::new(-sinv, cosv));
         }
 
         // While the deal animation plays, the sliding cards stand in for the
@@ -2779,31 +2802,62 @@ fn spawn_table_card(
     ));
 }
 
+/// Chip denominations, largest first, each paired with its colour index in
+/// `PokerAssets::chip_mats`: $100 purple, $50 orange, $20 green, $10 blue, $5 red.
+const CHIP_DENOMS: [(u32, usize); 5] = [(100, 4), (50, 3), (20, 2), (10, 1), (5, 0)];
+
+/// Break an amount into physical chips by denomination (greedy, largest first),
+/// returning `(colour_index, count)` per denomination present. Any odd remainder
+/// below $5 is shown as a single low chip so the visible chips always add up.
+fn chip_breakdown(amount: u32) -> Vec<(usize, u32)> {
+    let mut rem = amount;
+    let mut out = Vec::new();
+    for (value, idx) in CHIP_DENOMS {
+        let count = rem / value;
+        if count > 0 {
+            out.push((idx, count));
+            rem -= count * value;
+        }
+    }
+    if rem > 0 {
+        out.push((0, 1));
+    }
+    out
+}
+
+/// Lay `amount` worth of chips as separate same-colour piles (one per
+/// denomination) around `(cx, cz)`, spreading the piles along `dir` (a unit
+/// vector in the table plane). Each pile is a neat colour-sorted stack.
 fn spawn_chips(
     commands: &mut Commands,
     assets: &PokerAssets,
-    x: f32,
-    z: f32,
+    cx: f32,
+    cz: f32,
     felt_top: f32,
     amount: u32,
-    color: usize,
+    dir: Vec2,
 ) {
-    let n = ((amount as f32).sqrt() * 0.7).round().clamp(1.0, 16.0) as usize;
-    let base = color % assets.chip_mats.len();
-    let accent = (color + 2) % assets.chip_mats.len();
-    for k in 0..n {
-        let mat = if k % 4 == 3 {
-            assets.chip_mats[accent].clone()
-        } else {
-            assets.chip_mats[base].clone()
-        };
-        commands.spawn((
-            Mesh3d(assets.chip_mesh.clone()),
-            MeshMaterial3d(mat),
-            Transform::from_xyz(x, felt_top + 0.022 + k as f32 * 0.045, z)
-                .with_scale(Vec3::new(0.24, 0.04, 0.24)),
-            TableProp,
-        ));
+    if amount == 0 {
+        return;
+    }
+    let piles = chip_breakdown(amount);
+    let n = piles.len();
+    let spacing = 0.34;
+    for (pi, &(color, count)) in piles.iter().enumerate() {
+        // Centre the row of piles on (cx, cz).
+        let off = (pi as f32 - (n as f32 - 1.0) / 2.0) * spacing;
+        let px = cx + dir.x * off;
+        let pz = cz + dir.y * off;
+        let height = count.min(18);
+        for k in 0..height {
+            commands.spawn((
+                Mesh3d(assets.chip_mesh.clone()),
+                MeshMaterial3d(assets.chip_mats[color].clone()),
+                Transform::from_xyz(px, felt_top + 0.022 + k as f32 * 0.045, pz)
+                    .with_scale(Vec3::new(0.22, 0.04, 0.22)),
+                TableProp,
+            ));
+        }
     }
 }
 
@@ -2929,10 +2983,25 @@ fn chip_fly(
             commands.entity(e).despawn();
             continue;
         }
+        if now < fc.start {
+            continue; // staggered launch; wait at the player's stack
+        }
         let p = ((now - fc.start) / fc.dur).clamp(0.0, 1.0);
         let mut pos = fc.from.lerp(fc.to, p);
-        pos.y += (p * std::f32::consts::PI).sin() * 0.6; // arc up and into the pot
+        // Vertical: a main throw arc for the first 80% of the flight, then a
+        // small settle-bounce as it lands in the pot.
+        let h = if p < 0.8 {
+            let q = p / 0.8;
+            fc.arc * 4.0 * q * (1.0 - q)
+        } else {
+            let q = (p - 0.8) / 0.2;
+            fc.arc * 0.16 * 4.0 * q * (1.0 - q)
+        };
+        pos.y += h;
         tr.translation = pos;
+        // Tumble through the air, easing to a stop so it lands flat (whole turns).
+        let ease = 1.0 - (1.0 - p) * (1.0 - p);
+        tr.rotation = Quat::from_axis_angle(fc.axis, fc.spin * ease);
     }
 }
 

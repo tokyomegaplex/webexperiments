@@ -125,7 +125,7 @@ impl Rng {
         Rng(seed.wrapping_add(0x9E37_79B9_7F4A_7C15))
     }
 
-    fn next_u64(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -814,85 +814,159 @@ impl Game {
 }
 
 // ---------------------------------------------------------------------------
-// Simple personality-driven AI
+// Monte-Carlo equity AI
 // ---------------------------------------------------------------------------
 
-/// A rough 0..1 estimate of how good `seat`'s hand is right now.
-fn hand_strength(game: &Game, seat: usize) -> f32 {
-    let p = &game.players[seat];
-    if game.community.is_empty() {
-        // Preflop: a light Chen-style score normalised to ~0..1.
-        let (a, b) = (p.hole[0], p.hole[1]);
-        let hi = a.rank.value().max(b.rank.value()) as f32;
-        let lo = a.rank.value().min(b.rank.value()) as f32;
-        let pair = a.rank == b.rank;
-        let suited = a.suit == b.suit;
-        let gap = (hi - lo) as f32;
-        let mut s = hi / 14.0 * 0.5;
-        if pair {
-            s += 0.35 + hi / 14.0 * 0.15;
-        }
-        if suited {
-            s += 0.08;
-        }
-        if gap == 1.0 {
-            s += 0.06;
-        }
-        s.clamp(0.0, 1.0)
-    } else {
-        // Postflop: map the made-hand category onto 0..1.
-        let v = game.hand_value(seat).unwrap();
-        let base = match v.category {
-            HandCategory::HighCard => 0.12,
-            HandCategory::Pair => 0.32,
-            HandCategory::TwoPair => 0.52,
-            HandCategory::Trips => 0.68,
-            HandCategory::Straight => 0.80,
-            HandCategory::Flush => 0.86,
-            HandCategory::FullHouse => 0.92,
-            HandCategory::Quads => 0.97,
-            HandCategory::StraightFlush => 1.0,
-        };
-        base
+/// How many random roll-outs the equity estimator runs per decision. ~150 keeps
+/// the standard error around ±0.04 — plenty for sound call/raise/fold choices —
+/// while staying fast enough to run inline on every AI turn.
+const EQUITY_SAMPLES: usize = 150;
+
+/// Monte-Carlo estimate of the probability that `seat` wins the showdown given
+/// the cards visible to them (their hole cards + the board), against the other
+/// live players holding *random* hands. Ties split the win fractionally.
+///
+/// This is real equity — it understands draws, board texture, and how many
+/// opponents are still in — which makes the bots play far more sensibly than a
+/// fixed hand-category lookup. Uses a caller-supplied RNG so it stays seedable.
+pub fn equity(game: &Game, seat: usize, rng: &mut Rng, samples: usize) -> f32 {
+    let opponents = (0..game.players.len())
+        .filter(|&i| i != seat && game.players[i].in_hand())
+        .count();
+    if opponents == 0 {
+        return 1.0;
     }
+
+    // Cards we can already see are removed from the pool the opponents and the
+    // remaining board are drawn from.
+    let mut known = vec![game.players[seat].hole[0], game.players[seat].hole[1]];
+    known.extend(game.community.iter().copied());
+
+    let mut deck: Vec<Card> = Vec::with_capacity(52);
+    for &suit in &Suit::ALL {
+        for &rank in &Rank::ALL {
+            let c = Card::new(rank, suit);
+            if !known.contains(&c) {
+                deck.push(c);
+            }
+        }
+    }
+
+    let need_board = 5 - game.community.len();
+    let draw = opponents * 2 + need_board; // cards needed per roll-out
+    let mut wins = 0.0f32;
+
+    for _ in 0..samples {
+        // Partial Fisher–Yates from the front: a uniform random `draw`-subset,
+        // leaving the deck permuted (fine — the next sample re-draws).
+        let len = deck.len();
+        for i in 0..draw {
+            let j = i + rng.below(len - i);
+            deck.swap(i, j);
+        }
+
+        // Complete the board with the first `need_board` drawn cards.
+        let board_extra = &deck[opponents * 2..opponents * 2 + need_board];
+        let mut my_cards: Vec<Card> = Vec::with_capacity(7);
+        my_cards.extend(game.community.iter().copied());
+        my_cards.extend_from_slice(board_extra);
+        my_cards.push(game.players[seat].hole[0]);
+        my_cards.push(game.players[seat].hole[1]);
+        let mine = evaluate_best(&my_cards);
+
+        let mut ties = 0u32;
+        let mut lost = false;
+        for o in 0..opponents {
+            let mut opp: Vec<Card> = Vec::with_capacity(7);
+            opp.extend(game.community.iter().copied());
+            opp.extend_from_slice(board_extra);
+            opp.push(deck[o * 2]);
+            opp.push(deck[o * 2 + 1]);
+            match evaluate_best(&opp).cmp(&mine) {
+                Ordering::Greater => {
+                    lost = true;
+                    break;
+                }
+                Ordering::Equal => ties += 1,
+                Ordering::Less => {}
+            }
+        }
+        if !lost {
+            wins += 1.0 / (1.0 + ties as f32);
+        }
+    }
+
+    wins / samples as f32
 }
 
-/// Choose a (legal) action for an AI seat using its personality profile
+/// Choose a (legal) action for an AI seat. The bot estimates its showdown
+/// equity by Monte-Carlo, compares it to the pot odds it's being offered, and
+/// shades the decision with its personality profile
 /// `[aggression, tightness, bluff, tilt]`.
 pub fn ai_decide(game: &mut Game, seat: usize) -> Action {
-    let strength = hand_strength(game, seat);
-    let [aggression, tightness, bluff, _tilt] = game.players[seat].profile;
+    let [aggression, tightness, bluff, tilt] = game.players[seat].profile;
+
+    // Seed a local RNG from the game RNG so equity stays deterministic for a
+    // given game state (and we avoid borrowing `game` mutably during the roll).
+    let mut rng = Rng::new(game.rng.next_u64());
+    let eq = equity(game, seat, &mut rng, EQUITY_SAMPLES);
+
     let call = game.call_amount(seat);
     let pot = game.pot().max(1);
     let r = game.rng.unit();
+    let r2 = game.rng.unit();
 
-    // Pot odds for calling.
+    // Equity we need to break even on a call (pot odds), nudged up for tight
+    // players and down a touch when on tilt.
     let pot_odds = call as f32 / (pot + call) as f32;
+    let threshold = (pot_odds + tightness * 0.07 - tilt * r2 * 0.05).max(0.0);
 
-    // Bluff occasionally when checked to / facing a small bet.
-    let bluffing = r < bluff * 0.18;
+    // Value-bet/raise thresholds. Aggressive players fire with thinner edges.
+    let strong = eq > 0.66 - aggression * 0.10;
+    // A bluff: weak hand, fired off occasionally, more often for bluffy profiles.
+    let bluffing = eq < 0.42 && r < bluff * 0.16;
 
-    let want_raise = strength > 0.62 + aggression * -0.12 || bluffing;
-    let want_continue = strength + 0.05 > pot_odds + tightness * 0.18;
+    // Pot-fraction raise sizing helper.
+    let raise_to = |game: &Game, frac: f32| -> Option<u32> {
+        game.min_raise_to(seat).map(|min_to| {
+            let sizing = (pot as f32 * frac).max(game.big_blind as f32) as u32;
+            (game.current_bet + sizing)
+                .max(min_to)
+                .min(game.max_raise_to(seat))
+        })
+    };
 
     if call == 0 {
-        // No bet to face: check, or bet for value/bluff.
-        if want_raise {
-            if let Some(min_to) = game.min_raise_to(seat) {
-                let sizing = (pot as f32 * (0.4 + aggression * 0.5)) as u32;
-                let to = (game.current_bet + sizing).max(min_to).min(game.max_raise_to(seat));
+        // Nothing to call: check, or bet for value / as a bluff.
+        if strong {
+            if let Some(to) = raise_to(game, 0.45 + aggression * 0.55 + (eq - 0.5).max(0.0)) {
                 return Action::Raise(to);
             }
         }
-        Action::Check
-    } else if want_raise && strength > 0.5 {
-        if let Some(min_to) = game.min_raise_to(seat) {
-            let sizing = (pot as f32 * (0.5 + aggression * 0.6)) as u32;
-            let to = (game.current_bet + sizing).max(min_to).min(game.max_raise_to(seat));
+        if bluffing {
+            if let Some(to) = raise_to(game, 0.5 + aggression * 0.3) {
+                return Action::Raise(to);
+            }
+        }
+        return Action::Check;
+    }
+
+    // Facing a bet. Raise strong hands for value (aggressive seats do it more).
+    if strong && r < 0.65 + aggression * 0.35 {
+        if let Some(to) = raise_to(game, 0.6 + aggression * 0.6 + (eq - 0.6).max(0.0)) {
             return Action::Raise(to);
         }
-        Action::Call
-    } else if want_continue {
+    }
+
+    // Semi-bluff raise occasionally when the price to call is small.
+    if bluffing && call * 3 < pot {
+        if let Some(to) = raise_to(game, 0.55) {
+            return Action::Raise(to);
+        }
+    }
+
+    // Otherwise call if equity beats the price, else fold.
+    if eq + 0.015 >= threshold {
         Action::Call
     } else {
         Action::Fold
