@@ -2378,16 +2378,15 @@ fn slider_amount(g: &Game, frac: f32) -> u32 {
 
 /// Drag the bet-size slider and reflect it in the fill + handle position.
 ///
-/// We compute the cursor's position against the track's real on-screen rect
-/// (from its `ComputedNode` + `GlobalTransform`) rather than trusting a hover
-/// flag: pressing anywhere on the bar — including right on the coin — grabs it,
-/// and a drag latch keeps it following the cursor until the button is released,
-/// even if the pointer slides off the bar vertically.
+/// Uses Bevy's `RelativeCursorPosition`, which is computed correctly for any
+/// display DPI. `cursor_over` tells us a press landed on the (padded) track —
+/// including right on the coin, which sits inside the track — so we latch into a
+/// drag and follow the cursor until release, even if it slides off the bar.
+/// Note: `normalized` is centre-relative, −0.5 (left) .. +0.5 (right).
 fn slider_system(
     mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
     mut slider: ResMut<BetSlider>,
-    track: Query<(&ComputedNode, &GlobalTransform), With<SliderTrack>>,
+    track: Query<&RelativeCursorPosition, With<SliderTrack>>,
     mut fill: Query<&mut Node, (With<SliderFill>, Without<SliderHandle>)>,
     mut handle: Query<&mut Node, (With<SliderHandle>, Without<SliderFill>)>,
     mut dragging: Local<bool>,
@@ -2395,25 +2394,16 @@ fn slider_system(
     if !mouse.pressed(MouseButton::Left) {
         *dragging = false;
     }
-    if let (Ok(window), Ok((cn, gt))) = (windows.single(), track.single()) {
-        if let Some(cursor) = window.cursor_position() {
-            // ComputedNode/GlobalTransform are in physical px; the cursor is in
-            // logical px — convert the track rect to logical px to compare.
-            let sf = window.scale_factor().max(0.0001);
-            let size = cn.size() / sf;
-            let center = gt.translation().truncate() / sf;
-            let min = center - size / 2.0;
-            let local = cursor - min; // cursor relative to the track's top-left
-            let over = local.x >= 0.0
-                && local.x <= size.x
-                && local.y >= -8.0
-                && local.y <= size.y + 8.0;
-            if mouse.just_pressed(MouseButton::Left) && over {
-                *dragging = true;
-            }
-            if *dragging {
-                // Map x onto the coin's travel range (inset by its half-width).
-                slider.frac = ((local.x - SLIDER_PAD) / SLIDER_W).clamp(0.0, 1.0);
+    if let Ok(rel) = track.single() {
+        if mouse.just_pressed(MouseButton::Left) && rel.cursor_over {
+            *dragging = true;
+        }
+        if *dragging {
+            if let Some(n) = rel.normalized {
+                // Centre-relative x → pixels from the track's left edge → the
+                // coin's travel range (inset by its half-width each side).
+                let local_x = (n.x + 0.5) * SLIDER_TRACK_W;
+                slider.frac = ((local_x - SLIDER_PAD) / SLIDER_W).clamp(0.0, 1.0);
             }
         }
     }
