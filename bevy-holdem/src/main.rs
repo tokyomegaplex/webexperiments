@@ -1530,11 +1530,13 @@ fn setup(
             BettingBar,
         ))
         .with_children(|bar| {
-            // Bet-size slider: a tall (easy-to-grab) money bar with a $ coin.
+            // Bet-size slider: a tall, padded (easy-to-grab) money bar with a $
+            // coin. The whole track is the hitbox, padded so the coin is always
+            // inside it — clicking the coin anywhere along the bar grabs it.
             bar.spawn((
                 Node {
-                    width: Val::Px(SLIDER_W),
-                    height: Val::Px(46.0),
+                    width: Val::Px(SLIDER_TRACK_W),
+                    height: Val::Px(SLIDER_TRACK_H),
                     align_items: AlignItems::Center,
                     ..default()
                 },
@@ -1543,13 +1545,14 @@ fn setup(
                 SliderTrack,
             ))
             .with_children(|track| {
-                // the groove
+                let groove_top = SLIDER_TRACK_H / 2.0 - 8.0;
+                // the groove (inset to the coin's travel range)
                 track.spawn((
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(0.0),
-                        right: Val::Px(0.0),
-                        top: Val::Px(15.0),
+                        left: Val::Px(SLIDER_PAD),
+                        right: Val::Px(SLIDER_PAD),
+                        top: Val::Px(groove_top),
                         height: Val::Px(16.0),
                         ..default()
                     },
@@ -1559,10 +1562,10 @@ fn setup(
                 track.spawn((
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(0.0),
-                        top: Val::Px(15.0),
+                        left: Val::Px(SLIDER_PAD),
+                        top: Val::Px(groove_top),
                         height: Val::Px(16.0),
-                        width: Val::Percent(50.0),
+                        width: Val::Px(SLIDER_W / 2.0),
                         ..default()
                     },
                     BackgroundColor(Color::srgb(0.24, 0.62, 0.34)),
@@ -1576,10 +1579,10 @@ fn setup(
                     },
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(SLIDER_W / 2.0 - 21.0),
-                        top: Val::Px(1.0),
-                        width: Val::Px(42.0),
-                        height: Val::Px(42.0),
+                        left: Val::Px(SLIDER_W / 2.0),
+                        top: Val::Px(SLIDER_TRACK_H / 2.0 - SLIDER_COIN / 2.0),
+                        width: Val::Px(SLIDER_COIN),
+                        height: Val::Px(SLIDER_COIN),
                         ..default()
                     },
                     SliderHandle,
@@ -2386,16 +2389,19 @@ fn slider_system(
     if mouse.pressed(MouseButton::Left) {
         if let Ok(rel) = track.single() {
             if let Some(n) = rel.normalized {
-                slider.frac = n.x.clamp(0.0, 1.0);
+                // Cursor x is across the padded track; map it onto the coin's
+                // travel range (which is inset by the coin's half-width).
+                let px = n.x * SLIDER_TRACK_W - SLIDER_PAD;
+                slider.frac = (px / SLIDER_W).clamp(0.0, 1.0);
             }
         }
     }
     if let Ok(mut f) = fill.single_mut() {
-        f.width = Val::Percent(slider.frac * 100.0);
+        f.width = Val::Px(slider.frac * SLIDER_W);
     }
     if let Ok(mut h) = handle.single_mut() {
-        // Centre the coin on the chosen fraction.
-        h.left = Val::Px(slider.frac * SLIDER_W - 21.0);
+        // Coin's left edge so its centre lands on the chosen fraction.
+        h.left = Val::Px(slider.frac * SLIDER_W);
     }
 }
 
@@ -2580,13 +2586,21 @@ fn describe_action(game: &Game, seat: usize, action: Action) -> String {
     }
 }
 
-/// Bet slider track width (px).
+/// Bet slider: `SLIDER_W` is the coin's travel range; the grabbable track is
+/// padded by the coin's half-width on each side so the coin (and your click on
+/// it) is always inside the hitbox, even at the ends.
 const SLIDER_W: f32 = 360.0;
+const SLIDER_COIN: f32 = 44.0;
+const SLIDER_PAD: f32 = SLIDER_COIN / 2.0;
+const SLIDER_TRACK_W: f32 = SLIDER_W + SLIDER_COIN;
+const SLIDER_TRACK_H: f32 = 56.0;
 
 /// Where the community cards sit (z toward the player) and their x layout.
 const COMMUNITY_Z: f32 = 1.95;
 fn community_x(i: usize, count: f32) -> f32 {
-    (i as f32 - (count - 1.0) / 2.0) * 1.12
+    // Wide enough that even a slightly-spun card never overlaps its neighbour
+    // (card is ~0.98 wide at scale 1.25), so every rank stays readable.
+    (i as f32 - (count - 1.0) / 2.0) * 1.34
 }
 
 /// Rebuild all engine-driven props (cards, chips, dealer button) from the
@@ -2629,7 +2643,9 @@ fn redraw_table(
     let c = g.community.len() as f32;
     for (i, card) in g.community.iter().take(shown).enumerate() {
         let x = community_x(i, c);
-        let yaw = (hash11(i as f32 * 12.9 + 3.0) - 0.5) * 0.22;
+        // Only a whisper of spin — enough to look hand-placed, not so much that
+        // a card's corner swings over its neighbour and hides a rank.
+        let yaw = (hash11(i as f32 * 12.9 + 3.0) - 0.5) * 0.07;
         let mat = face_material(&mut faces, &mut materials, &asset_server, &card.code());
         spawn_table_card(
             &mut commands,
@@ -2806,23 +2822,36 @@ fn spawn_table_card(
 /// `PokerAssets::chip_mats`: $100 purple, $50 orange, $20 green, $10 blue, $5 red.
 const CHIP_DENOMS: [(u32, usize); 5] = [(100, 4), (50, 3), (20, 2), (10, 1), (5, 0)];
 
-/// Break an amount into physical chips by denomination (greedy, largest first),
-/// returning `(colour_index, count)` per denomination present. Any odd remainder
-/// below $5 is shown as a single low chip so the visible chips always add up.
+/// Break an amount into physical chips that always add up to the value, but in a
+/// *balanced* mix so a stack shows a bunch of every colour rather than one tall
+/// tower of the biggest denomination. Returns `(colour_index, count)` per
+/// denomination, largest first. A pure greedy split would give e.g. $990 as
+/// nine $100s and one each of the rest; instead we give each denomination an
+/// equal base count first, then spread the small remainder greedily.
 fn chip_breakdown(amount: u32) -> Vec<(usize, u32)> {
-    let mut rem = amount;
-    let mut out = Vec::new();
+    // Sum of one chip of every denomination ($5+$10+$20+$50+$100).
+    const SET_VALUE: u32 = 185;
+    let base = amount / SET_VALUE; // equal count of each denomination
+    let mut counts = [0u32; 5]; // indexed by colour: [0]=$5 .. [4]=$100
+    for c in counts.iter_mut() {
+        *c = base;
+    }
+    let mut rem = amount - base * SET_VALUE;
+    // Spread what's left across denominations, largest first.
     for (value, idx) in CHIP_DENOMS {
-        let count = rem / value;
-        if count > 0 {
-            out.push((idx, count));
-            rem -= count * value;
-        }
+        let c = rem / value;
+        counts[idx] += c;
+        rem -= c * value;
     }
     if rem > 0 {
-        out.push((0, 1));
+        counts[0] += 1; // odd chip under $5
     }
-    out
+    // Emit piles largest-denomination first, skipping any that are empty.
+    CHIP_DENOMS
+        .iter()
+        .filter(|&&(_, idx)| counts[idx] > 0)
+        .map(|&(_, idx)| (idx, counts[idx]))
+        .collect()
 }
 
 /// Lay `amount` worth of chips as separate same-colour piles (one per
@@ -2842,19 +2871,28 @@ fn spawn_chips(
     }
     let piles = chip_breakdown(amount);
     let n = piles.len();
-    let spacing = 0.34;
+    // Lay the piles out in a compact grid (up to 3 across), spreading width along
+    // `dir` and depth along its perpendicular. Spacing is wider than a chip so
+    // neighbouring piles never overlap. Chip radius 0.18 → diameter 0.36.
+    let perp = Vec2::new(-dir.y, dir.x);
+    let spacing = 0.42;
+    let per_row = 3usize;
+    let rows = n.div_ceil(per_row);
     for (pi, &(color, count)) in piles.iter().enumerate() {
-        // Centre the row of piles on (cx, cz).
-        let off = (pi as f32 - (n as f32 - 1.0) / 2.0) * spacing;
-        let px = cx + dir.x * off;
-        let pz = cz + dir.y * off;
+        let row = pi / per_row;
+        let col = pi % per_row;
+        let row_len = (n - row * per_row).min(per_row);
+        let woff = (col as f32 - (row_len as f32 - 1.0) / 2.0) * spacing;
+        let doff = (row as f32 - (rows as f32 - 1.0) / 2.0) * spacing;
+        let px = cx + dir.x * woff + perp.x * doff;
+        let pz = cz + dir.y * woff + perp.y * doff;
         let height = count.min(18);
         for k in 0..height {
             commands.spawn((
                 Mesh3d(assets.chip_mesh.clone()),
                 MeshMaterial3d(assets.chip_mats[color].clone()),
                 Transform::from_xyz(px, felt_top + 0.022 + k as f32 * 0.045, pz)
-                    .with_scale(Vec3::new(0.22, 0.04, 0.22)),
+                    .with_scale(Vec3::new(0.18, 0.04, 0.18)),
                 TableProp,
             ));
         }
@@ -2898,12 +2936,22 @@ fn hud(
 
     // Big centre banner at showdown.
     let banner_text = if g.street == Street::HandOver {
+        // Only a real showdown (more than one player still holding cards) reveals
+        // a hand — if everyone else folded, the winner never showed theirs.
+        let showdown = g.live_count() > 1;
         g.last_payouts
             .iter()
             .map(|pay| {
                 let p = &g.players[pay.seat];
                 let verb = if p.is_human { "win" } else { "wins" };
-                format!("{} {verb} ${}", p.name, pay.amount)
+                let hand = if showdown {
+                    g.hand_value(pay.seat)
+                        .map(|v| format!(" with a {}", v.category.name()))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                format!("{} {verb} ${}{}", p.name, pay.amount, hand)
             })
             .collect::<Vec<_>>()
             .join("   ·   ")
