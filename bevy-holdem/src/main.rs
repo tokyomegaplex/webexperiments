@@ -71,11 +71,36 @@ struct NextRoundBar;
 #[derive(Component)]
 struct NextButton;
 
-/// Bubble the bartender: a billboard that faces the camera with an idle wobble.
+/// What Bubble the bartender is doing right now.
+#[derive(Clone, Copy, PartialEq)]
+enum BarState {
+    /// Facing the room (front sprite), idling.
+    Front,
+    /// Turned around to fiddle with the bar (back sprite).
+    Bar,
+    /// Strolling along the bar (side sprites).
+    WalkLeft,
+    WalkRight,
+}
+
+/// Bubble the bartender: a billboard that faces the camera with an idle wobble,
+/// and a little life of his own — he randomly idles, turns to the bar, and
+/// strolls left/right behind the counter (see `bar_standee`).
 #[derive(Component)]
 struct BarStandee {
     base: Vec3,
     seed: f32,
+    state: BarState,
+    /// When to pick the next state.
+    state_until: f32,
+    /// Walk segment: x from→to over walk_start→state_until.
+    walk_from: f32,
+    walk_to: f32,
+    walk_start: f32,
+    /// Seconds left of the squash-and-stretch pulse played on a state switch.
+    squash: f32,
+    /// Materials per facing: [front, back, left, right].
+    mats: [Handle<StandardMaterial>; 4],
 }
 
 /// The single bobbing arrow that points at whoever's turn it is.
@@ -954,26 +979,42 @@ fn setup(
         Transform::from_xyz(0.0, floor_y + 2.4, bar_z + 1.0),
     ));
 
-    // --- Bubble the bartender: a billboard standee behind the counter ---
+    // --- Bubble the bartender: a billboard standee behind the counter, with
+    // directional sprites so he can idle, turn to the bar, and stroll around ---
     {
         let base = Vec3::new(-7.5, floor_y + 2.5, bar_z + 0.5);
-        commands.spawn((
-            Mesh3d(meshes.add(Rectangle::new(3.0, 4.06))),
-            MeshMaterial3d(materials.add(StandardMaterial {
+        let sprites = bubble_sprites();
+        let mats: [Handle<StandardMaterial>; 4] = sprites.map(|path| {
+            let tex = asset_server.load(path);
+            materials.add(StandardMaterial {
                 base_color: Color::WHITE,
-                base_color_texture: Some(asset_server.load("characters/Bubble.png")),
+                base_color_texture: Some(tex.clone()),
                 emissive: LinearRgba::rgb(0.6, 0.6, 0.6),
-                emissive_texture: Some(asset_server.load("characters/Bubble.png")),
+                emissive_texture: Some(tex),
                 perceptual_roughness: 1.0,
                 reflectance: 0.0,
                 alpha_mode: AlphaMode::Blend,
                 double_sided: true,
                 cull_mode: None,
                 ..default()
-            })),
+            })
+        });
+        commands.spawn((
+            Mesh3d(meshes.add(Rectangle::new(3.0, 4.06))),
+            MeshMaterial3d(mats[0].clone()),
             Transform::from_translation(base),
             NotShadowCaster,
-            BarStandee { base, seed: 4.2 },
+            BarStandee {
+                base,
+                seed: 4.2,
+                state: BarState::Front,
+                state_until: 0.0,
+                walk_from: base.x,
+                walk_to: base.x,
+                walk_start: 0.0,
+                squash: 0.0,
+                mats,
+            },
         ));
     }
 
@@ -2012,6 +2053,51 @@ fn scan_sfx() -> Vec<String> {
     Vec::new()
 }
 
+/// Find Bubble's directional sprites: looks for a `characters/bubble/` folder
+/// (any case) containing PNGs named with front/back/left/right, and falls back
+/// to the single `characters/Bubble.png` for any facing that's missing.
+/// Returns asset-relative paths ordered [front, back, left, right].
+fn bubble_sprites() -> [String; 4] {
+    let fallback = "characters/Bubble.png".to_string();
+    let mut out = [
+        fallback.clone(),
+        fallback.clone(),
+        fallback.clone(),
+        fallback,
+    ];
+    let roots = [env::var("BEVY_ASSET_ROOT").ok(), Some("assets".to_string())];
+    for root in roots.into_iter().flatten() {
+        let base = std::path::Path::new(&root).join("characters");
+        let Ok(rd) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let dir = entry.path();
+            let dname = entry.file_name().to_string_lossy().to_string();
+            if !dir.is_dir() || dname.to_lowercase() != "bubble" {
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for f in files.flatten() {
+                let fname = f.file_name().to_string_lossy().to_string();
+                let lower = fname.to_lowercase();
+                if !lower.ends_with(".png") {
+                    continue;
+                }
+                let rel = format!("characters/{dname}/{fname}");
+                for (key, slot) in [("front", 0), ("back", 1), ("left", 2), ("right", 3)] {
+                    if lower.contains(key) {
+                        out[slot] = rel.clone();
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Cheap deterministic hash → pseudo-noise in [0, 1).
 fn hash11(x: f32) -> f32 {
     let v = (x * 127.1).sin() * 43758.5453;
@@ -3021,26 +3107,117 @@ fn hud(
     }
 }
 
-/// When the showdown settles, the winner(s) cheer: a hop + their voice.
-/// Idle wobble + camera-facing for Bubble the bartender (like the players).
+/// Bubble the bartender's little life: he randomly idles facing the room,
+/// turns around to fiddle with the bar, and strolls left/right behind the
+/// counter — swapping between his front/back/left/right sprites, with a quick
+/// squash-and-stretch pulse on every state change and a bob while walking.
 fn bar_standee(
     time: Res<Time>,
+    mut rng: ResMut<SfxRng>,
     camera: Query<&Transform, (With<Camera3d>, Without<BarStandee>)>,
-    mut q: Query<(&BarStandee, &mut Transform)>,
+    mut q: Query<(
+        &mut BarStandee,
+        &mut Transform,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
 ) {
+    /// Bubble roams this stretch of the bar (counter runs x -11..11).
+    const WALK_MIN: f32 = -9.5;
+    const WALK_MAX: f32 = -3.0;
+    const WALK_SPEED: f32 = 1.3; // units/sec
+    const SQUASH_T: f32 = 0.26; // squash-stretch pulse length (secs)
+
     let Some(cam) = camera.iter().next() else {
         return;
     };
     let cam_pos = cam.translation;
-    let step = (time.elapsed_secs() * 4.0).floor();
-    for (b, mut t) in &mut q {
-        let nx = hash11(b.seed * 1.3 + step * 0.0137) * 2.0 - 1.0;
-        let ny = hash11(b.seed * 2.1 + step * 0.0211) * 2.0 - 1.0;
-        let nlean = hash11(b.seed * 3.7 + step * 0.009) * 2.0 - 1.0;
-        let pos = b.base + Vec3::new(nx * 0.02, ny * 0.02, 0.0);
+    let now = time.elapsed_secs();
+    let dt = time.delta_secs();
+    let step = (now * 4.0).floor();
+
+    for (mut b, mut t, mut mat) in &mut q {
+        // --- state machine: pick something new to do when the timer runs out ---
+        if now >= b.state_until {
+            let r = rng.unit();
+            let (next, until) = match b.state {
+                BarState::Front => {
+                    if r < 0.30 {
+                        (BarState::Front, now + 2.0 + rng.unit() * 3.0) // keep idling
+                    } else if r < 0.55 {
+                        (BarState::Bar, now + 2.0 + rng.unit() * 3.5) // tend the bar
+                    } else {
+                        // Stroll somewhere along the counter.
+                        let to = WALK_MIN + rng.unit() * (WALK_MAX - WALK_MIN);
+                        b.walk_from = b.base.x;
+                        b.walk_to = to;
+                        b.walk_start = now;
+                        let dur = ((to - b.base.x).abs() / WALK_SPEED).max(0.4);
+                        let dir = if to < b.base.x {
+                            BarState::WalkLeft
+                        } else {
+                            BarState::WalkRight
+                        };
+                        (dir, now + dur)
+                    }
+                }
+                BarState::Bar => (BarState::Front, now + 2.0 + rng.unit() * 3.0),
+                BarState::WalkLeft | BarState::WalkRight => {
+                    // Arrived: settle, then either face the room or the bar.
+                    b.base.x = b.walk_to;
+                    if rng.unit() < 0.4 {
+                        (BarState::Bar, now + 1.5 + rng.unit() * 2.5)
+                    } else {
+                        (BarState::Front, now + 2.0 + rng.unit() * 3.0)
+                    }
+                }
+            };
+            if next != b.state {
+                b.squash = SQUASH_T; // pop a squash-stretch on every switch
+            }
+            b.state = next;
+            b.state_until = until;
+        }
+
+        // --- sprite facing ---
+        let idx = match b.state {
+            BarState::Front => 0,
+            BarState::Bar => 1,
+            BarState::WalkLeft => 2,
+            BarState::WalkRight => 3,
+        };
+        if mat.0 != b.mats[idx] {
+            mat.0 = b.mats[idx].clone();
+        }
+
+        // --- position: stroll or idle-wobble ---
+        let mut pos = b.base;
+        if matches!(b.state, BarState::WalkLeft | BarState::WalkRight) {
+            let span = (b.state_until - b.walk_start).max(0.001);
+            let p = ((now - b.walk_start) / span).clamp(0.0, 1.0);
+            pos.x = b.walk_from + (b.walk_to - b.walk_from) * p;
+            b.base.x = pos.x;
+            // A springy step-bob while he walks.
+            pos.y += ((now * 9.0).sin()).abs() * 0.08;
+        } else {
+            let nx = hash11(b.seed * 1.3 + step * 0.0137) * 2.0 - 1.0;
+            let ny = hash11(b.seed * 2.1 + step * 0.0211) * 2.0 - 1.0;
+            pos += Vec3::new(nx * 0.02, ny * 0.02, 0.0);
+        }
         t.translation = pos;
         t.look_at(Vec3::new(cam_pos.x, pos.y, cam_pos.z), Vec3::Y);
+        let nlean = hash11(b.seed * 3.7 + step * 0.009) * 2.0 - 1.0;
         t.rotate_local_z(nlean * 0.01);
+
+        // --- squash & stretch pulse on state switches ---
+        if b.squash > 0.0 {
+            b.squash = (b.squash - dt).max(0.0);
+        }
+        let pulse = if b.squash > 0.0 {
+            (((SQUASH_T - b.squash) / SQUASH_T) * std::f32::consts::PI).sin()
+        } else {
+            0.0
+        };
+        t.scale = Vec3::new(1.0 + pulse * 0.10, 1.0 - pulse * 0.12, 1.0);
     }
 }
 
