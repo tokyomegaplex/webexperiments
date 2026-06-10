@@ -1721,16 +1721,27 @@ fn setup(
     let cig_mesh = meshes.add(Cylinder::new(0.028, 0.62));
     let smoke_tex = asset_server.load("smoke.png");
     let smoke_quad = meshes.add(Rectangle::new(1.0, 1.0));
-    // Two cigarettes resting at different angles, tilted up so they sit on the
-    // rim instead of clipping through the dish.
-    for (sx, sz, yaw, tilt) in [
-        (-0.15_f32, 0.05_f32, 0.62_f32, 0.26_f32),
-        (0.12, -0.1, -0.42, 0.15),
-    ] {
-        let rot = Quat::from_rotation_y(yaw)
-            * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2 - tilt);
-        let base = Vec3::new(ash_x + sx, felt_top + 0.115, ash_z + sz);
-        let dir = rot * Vec3::Y; // cylinder long axis after rotation
+    // Two cigarettes parked on the ashtray edge, each genuinely *resting* on the
+    // rim: the filter end sits on the felt outside, the body touches the top of
+    // the rim at its crossing point, and the lit end angles up over the dish —
+    // so nothing passes through the rim or the dish.
+    for (theta, tilt) in [(2.35_f32, 0.30_f32), (-0.65, 0.34)] {
+        // Contact point: on top of the rim (torus top + cig radius).
+        let contact = Vec3::new(
+            ash_x + theta.cos() * 0.4,
+            felt_top + 0.10 + 0.028,
+            ash_z + theta.sin() * 0.4,
+        );
+        // Long axis: horizontally inward over the dish, tilted up.
+        let dir = Vec3::new(
+            -theta.cos() * tilt.cos(),
+            tilt.sin(),
+            -theta.sin() * tilt.cos(),
+        );
+        let rot = Quat::from_rotation_arc(Vec3::Y, dir);
+        // Centre sits a little up-axis of the contact, so most of the paper +
+        // the filter hang outside, dropping to the felt.
+        let base = contact + dir * 0.12;
         commands.spawn((
             Mesh3d(cig_mesh.clone()),
             MeshMaterial3d(cig_paper.clone()),
@@ -1753,7 +1764,7 @@ fn setup(
             NotShadowCaster,
         ));
         // a column of drifting smoke puffs rising from the ember (animated)
-        let origin = Vec3::new(ember.x, felt_top + 0.14, ember.z);
+        let origin = ember + Vec3::Y * 0.03;
         for p in 0..5 {
             let smat = materials.add(StandardMaterial {
                 base_color: Color::srgba(0.72, 0.76, 0.82, 0.0),
@@ -1771,7 +1782,7 @@ fn setup(
                 NotShadowCaster,
                 Smoke {
                     origin,
-                    phase: p as f32 * 0.2 + sx.abs(),
+                    phase: p as f32 * 0.2 + theta.abs(),
                     speed: 0.22,
                 },
             ));
@@ -2163,6 +2174,7 @@ fn deal_system(
     mut q_deal: Query<(Entity, &mut DealingCard, &mut Transform), Without<DeckCard>>,
     mut q_deck: Query<(&DeckCard, &mut Transform), Without<DealingCard>>,
     q_pot: Query<Entity, With<PotChip>>,
+    mut last_deal: Local<usize>,
 ) {
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
@@ -2211,9 +2223,11 @@ fn deal_system(
                 let a = poker.seat_angles[s];
                 let (cosv, sinv) = (a.cos(), a.sin());
                 let off = (pass as f32 - 0.5) * 0.46;
+                // Second pass lands slightly higher so the cards overlap
+                // cleanly instead of intersecting (matches redraw_table).
                 let to = Vec3::new(
                     cosv * poker.rx * 0.72 + (-sinv) * off,
-                    poker.felt_top + 0.022,
+                    poker.felt_top + 0.022 + pass as f32 * 0.016,
                     sinv * poker.rz * 0.72 + cosv * off,
                 );
                 let start = now + shuffle + (pass * order.len() + idx) as f32 * step;
@@ -2235,8 +2249,17 @@ fn deal_system(
         poker.deal_start = now + shuffle;
         poker.deal_end = last + 0.05;
         needs.0 = true;
-        let deal = rng.pick(&sfx.deal).cloned().unwrap_or_default();
-        play_sfx(&mut commands, &deal, &mut rng);
+        // Random deal sound, but never the same one twice in a row — true
+        // randomness repeats often enough that it *feels* broken.
+        if !sfx.deal.is_empty() {
+            let mut i = rng.next_u32() as usize % sfx.deal.len();
+            if sfx.deal.len() > 1 && i == *last_deal {
+                i = (i + 1 + rng.next_u32() as usize % (sfx.deal.len() - 1)) % sfx.deal.len();
+            }
+            *last_deal = i;
+            let deal = sfx.deal[i].clone();
+            play_sfx(&mut commands, &deal, &mut rng);
+        }
 
         // The blinds (anything already committed) fly into the pot as the deal
         // finishes, so the pot pile starts off showing them.
@@ -2695,7 +2718,10 @@ fn redraw_table(
             let (tx, tz) = (-sinv, cosv); // tangent, to lay the two cards side by side
             for (k, card) in p.hole.iter().enumerate() {
                 let off = (k as f32 - 0.5) * 0.46;
-                let yaw = (hash11(s as f32 * 7.0 + k as f32 * 3.1) - 0.5) * 0.22;
+                // Gentle spin only, and lay the second card clearly *on top of*
+                // the first (raised a touch) so they overlap like real cards
+                // instead of intersecting through each other.
+                let yaw = (hash11(s as f32 * 7.0 + k as f32 * 3.1) - 0.5) * 0.06;
                 let mat = if showdown {
                     face_material(&mut faces, &mut materials, &asset_server, &card.code())
                 } else {
@@ -2708,7 +2734,7 @@ fn redraw_table(
                     flat,
                     hx + tx * off,
                     hz + tz * off,
-                    ft,
+                    ft + k as f32 * 0.016,
                     0.85,
                     card_tilt,
                     yaw,
@@ -3232,5 +3258,46 @@ fn street_name(s: Street) -> &'static str {
         Street::River => "River",
         Street::Showdown => "Showdown",
         Street::HandOver => "Hand over",
+    }
+}
+
+#[cfg(test)]
+mod sfx_tests {
+    use super::*;
+
+    /// The folder scan must find every deal*.wav, and random picks must hit all
+    /// of them — guards the "is it really switching between my sounds?" path.
+    #[test]
+    fn deal_sounds_are_all_discovered_and_picked() {
+        let files = scan_sfx();
+        let deals: Vec<&String> = files
+            .iter()
+            .filter(|f| {
+                f.rsplit('/')
+                    .next()
+                    .unwrap_or(f)
+                    .to_lowercase()
+                    .starts_with("deal")
+            })
+            .collect();
+        assert!(
+            deals.len() >= 10,
+            "expected at least 10 deal sounds, found {}: {:?}",
+            deals.len(),
+            deals
+        );
+
+        // Picking 500 times must select every file (uniform RNG over 10 items).
+        let mut rng = SfxRng(12345);
+        let mut hits = vec![0u32; deals.len()];
+        for _ in 0..500 {
+            let p = rng.pick(&deals).unwrap();
+            let i = deals.iter().position(|d| d == p).unwrap();
+            hits[i] += 1;
+        }
+        assert!(
+            hits.iter().all(|&h| h > 0),
+            "some deal sounds were never picked: {hits:?}"
+        );
     }
 }
