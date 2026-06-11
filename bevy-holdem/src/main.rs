@@ -3478,3 +3478,22 @@ mod sfx_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod bubble_tests {
+    use super::*;
+
+    /// All four directional sprites must be discovered from the Bubble folder
+    /// (not the single-image fallback) now that the art is in the repo.
+    #[test]
+    fn bubble_directional_sprites_are_discovered() {
+        let s = bubble_sprites();
+        for (i, facing) in ["front", "back", "left", "right"].iter().enumerate() {
+            assert!(
+                s[i].to_lowercase().contains(facing),
+                "facing {facing} resolved to fallback: {}",
+                s[i]
+            );
+        }
+    }
+}
