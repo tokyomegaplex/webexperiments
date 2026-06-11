@@ -72,7 +72,7 @@ struct NextRoundBar;
 struct NextButton;
 
 /// What Bubble the bartender is doing right now.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum BarState {
     /// Facing the room (front sprite), idling.
     Front,
@@ -1453,17 +1453,21 @@ fn setup(
         });
     }
 
-    // Floating money labels above each AI head, and a showdown banner.
+    // Floating money labels under each AI's name plate. A fixed-width,
+    // centre-justified node so the text always sits centred beneath the plate
+    // (rather than drifting off to one side).
     for s in 1..=roster().len() {
         commands.spawn((
             Text::new(""),
             TextFont {
-                font_size: 20.0,
+                font_size: 19.0,
                 ..default()
             },
-            TextColor(Color::srgb(1.0, 0.92, 0.55)),
+            TextColor(Color::srgb(1.0, 0.93, 0.6)),
+            TextLayout::new_with_justify(Justify::Center),
             Node {
                 position_type: PositionType::Absolute,
+                width: Val::Px(MONEY_LABEL_W),
                 ..default()
             },
             MoneyLabel(s),
@@ -1508,22 +1512,31 @@ fn setup(
             });
         });
 
-    // --- HUD overlay (street / pot / players / last action) ---
-    commands.spawn((
-        Text::new("dealing..."),
-        TextFont {
-            font_size: 18.0,
-            ..default()
-        },
-        TextColor(Color::srgb(0.95, 0.95, 0.9)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(12.0),
-            left: Val::Px(12.0),
-            ..default()
-        },
-        HudText,
-    ));
+    // --- HUD overlay (street / pot / players / last action) in a tidy panel ---
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(12.0),
+                left: Val::Px(12.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.72)),
+            BorderColor::all(Color::srgba(0.85, 0.72, 0.35, 0.55)),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("dealing..."),
+                TextFont {
+                    font_size: 17.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.96, 0.95, 0.9)),
+                HudText,
+            ));
+        });
 
     // Your two hole cards, drawn flat in the bottom-left corner (2D overlay).
     for k in 0..2 {
@@ -2700,6 +2713,9 @@ fn describe_action(game: &Game, seat: usize, action: Action) -> String {
     }
 }
 
+/// Fixed width of the floating per-player money labels (so they centre cleanly).
+const MONEY_LABEL_W: f32 = 150.0;
+
 /// Bet slider: `SLIDER_W` is the coin's travel range; the grabbable track is
 /// padded by the coin's half-width on each side so the coin (and your click on
 /// it) is always inside the hitbox, even at the ends.
@@ -3107,10 +3123,67 @@ fn hud(
     }
 }
 
-/// Bubble the bartender's little life: he randomly idles facing the room,
-/// turns around to fiddle with the bar, and strolls left/right behind the
-/// counter — swapping between his front/back/left/right sprites, with a quick
-/// squash-and-stretch pulse on every state change and a bob while walking.
+/// Bubble roams this stretch of the bar (counter runs x -11..11).
+const BUBBLE_WALK_MIN: f32 = -9.5;
+const BUBBLE_WALK_MAX: f32 = -2.5;
+const BUBBLE_WALK_SPEED: f32 = 2.6; // units/sec — a brisk, visible stroll
+const BUBBLE_SQUASH_T: f32 = 0.26; // squash-stretch pulse length (secs)
+
+/// One step of Bubble's behaviour state machine, pulled out so it's unit-testable
+/// without Bevy. Given the current state/position, two random rolls and the
+/// clock, returns the next state, when to re-decide, and (for a walk) the
+/// from/to x of the stroll. Walking is the most common choice so it's actually
+/// visible. Returns `(next, until, walk_from, walk_to)`.
+fn bubble_next(
+    state: BarState,
+    base_x: f32,
+    r: f32,
+    walk_target: f32,
+    now: f32,
+) -> (BarState, f32, f32, f32) {
+    let walk_to = || BUBBLE_WALK_MIN + walk_target * (BUBBLE_WALK_MAX - BUBBLE_WALK_MIN);
+    match state {
+        // After a walk or tending the bar, often set off on another stroll.
+        BarState::WalkLeft | BarState::WalkRight | BarState::Bar => {
+            if r < 0.55 {
+                let to = walk_to();
+                let dur = ((to - base_x).abs() / BUBBLE_WALK_SPEED).max(0.5);
+                let dir = if to < base_x {
+                    BarState::WalkLeft
+                } else {
+                    BarState::WalkRight
+                };
+                (dir, now + dur, base_x, to)
+            } else if r < 0.78 {
+                (BarState::Front, now + 1.5 + walk_target * 2.0, base_x, base_x)
+            } else {
+                (BarState::Bar, now + 1.5 + walk_target * 2.0, base_x, base_x)
+            }
+        }
+        // While idling out front, mostly go for a walk.
+        BarState::Front => {
+            if r < 0.60 {
+                let to = walk_to();
+                let dur = ((to - base_x).abs() / BUBBLE_WALK_SPEED).max(0.5);
+                let dir = if to < base_x {
+                    BarState::WalkLeft
+                } else {
+                    BarState::WalkRight
+                };
+                (dir, now + dur, base_x, to)
+            } else if r < 0.80 {
+                (BarState::Bar, now + 1.5 + walk_target * 2.0, base_x, base_x)
+            } else {
+                (BarState::Front, now + 1.5 + walk_target * 2.0, base_x, base_x)
+            }
+        }
+    }
+}
+
+/// Bubble the bartender's little life: he idles facing the room, turns around
+/// to fiddle with the bar, and strolls left/right behind the counter — swapping
+/// between his front/back/left/right sprites, with a quick squash-and-stretch
+/// pulse on every state change and a bob while walking.
 fn bar_standee(
     time: Res<Time>,
     mut rng: ResMut<SfxRng>,
@@ -3121,12 +3194,6 @@ fn bar_standee(
         &mut MeshMaterial3d<StandardMaterial>,
     )>,
 ) {
-    /// Bubble roams this stretch of the bar (counter runs x -11..11).
-    const WALK_MIN: f32 = -9.5;
-    const WALK_MAX: f32 = -3.0;
-    const WALK_SPEED: f32 = 1.3; // units/sec
-    const SQUASH_T: f32 = 0.26; // squash-stretch pulse length (secs)
-
     let Some(cam) = camera.iter().next() else {
         return;
     };
@@ -3139,43 +3206,16 @@ fn bar_standee(
         // --- state machine: pick something new to do when the timer runs out ---
         if now >= b.state_until {
             let r = rng.unit();
-            let (next, until) = match b.state {
-                BarState::Front => {
-                    if r < 0.30 {
-                        (BarState::Front, now + 2.0 + rng.unit() * 3.0) // keep idling
-                    } else if r < 0.55 {
-                        (BarState::Bar, now + 2.0 + rng.unit() * 3.5) // tend the bar
-                    } else {
-                        // Stroll somewhere along the counter.
-                        let to = WALK_MIN + rng.unit() * (WALK_MAX - WALK_MIN);
-                        b.walk_from = b.base.x;
-                        b.walk_to = to;
-                        b.walk_start = now;
-                        let dur = ((to - b.base.x).abs() / WALK_SPEED).max(0.4);
-                        let dir = if to < b.base.x {
-                            BarState::WalkLeft
-                        } else {
-                            BarState::WalkRight
-                        };
-                        (dir, now + dur)
-                    }
-                }
-                BarState::Bar => (BarState::Front, now + 2.0 + rng.unit() * 3.0),
-                BarState::WalkLeft | BarState::WalkRight => {
-                    // Arrived: settle, then either face the room or the bar.
-                    b.base.x = b.walk_to;
-                    if rng.unit() < 0.4 {
-                        (BarState::Bar, now + 1.5 + rng.unit() * 2.5)
-                    } else {
-                        (BarState::Front, now + 2.0 + rng.unit() * 3.0)
-                    }
-                }
-            };
+            let target = rng.unit();
+            let (next, until, from, to) = bubble_next(b.state, b.base.x, r, target, now);
             if next != b.state {
-                b.squash = SQUASH_T; // pop a squash-stretch on every switch
+                b.squash = BUBBLE_SQUASH_T; // pop a squash-stretch on every switch
             }
             b.state = next;
             b.state_until = until;
+            b.walk_from = from;
+            b.walk_to = to;
+            b.walk_start = now;
         }
 
         // --- sprite facing ---
@@ -3197,7 +3237,7 @@ fn bar_standee(
             pos.x = b.walk_from + (b.walk_to - b.walk_from) * p;
             b.base.x = pos.x;
             // A springy step-bob while he walks.
-            pos.y += ((now * 9.0).sin()).abs() * 0.08;
+            pos.y += ((now * 9.0).sin()).abs() * 0.12;
         } else {
             let nx = hash11(b.seed * 1.3 + step * 0.0137) * 2.0 - 1.0;
             let ny = hash11(b.seed * 2.1 + step * 0.0211) * 2.0 - 1.0;
@@ -3213,7 +3253,7 @@ fn bar_standee(
             b.squash = (b.squash - dt).max(0.0);
         }
         let pulse = if b.squash > 0.0 {
-            (((SQUASH_T - b.squash) / SQUASH_T) * std::f32::consts::PI).sin()
+            (((BUBBLE_SQUASH_T - b.squash) / BUBBLE_SQUASH_T) * std::f32::consts::PI).sin()
         } else {
             0.0
         };
@@ -3398,26 +3438,28 @@ fn money_labels(
         let head = Vec3::new(a.cos() * poker.prx, 3.7, a.sin() * poker.prz);
         match cam.world_to_viewport(cam_t, head) {
             Ok(p) => {
-                node.left = Val::Px(p.x - 40.0);
+                // Centre the fixed-width label on the head position.
+                node.left = Val::Px(p.x - MONEY_LABEL_W / 2.0);
                 node.top = Val::Px(p.y);
-                // At showdown, call out each live player's made hand.
-                let content = if g.street == Street::HandOver {
+                // Stack on the first line; any status/hand on a second line so it
+                // stays centred and readable instead of running off sideways.
+                let second = if g.street == Street::HandOver {
                     if player.folded {
-                        format!("${}  folded", player.stack)
-                    } else if let Some(hv) = g.hand_value(s) {
-                        format!("${}  {}", player.stack, hv.category.name())
+                        "folded".to_string()
                     } else {
-                        format!("${}", player.stack)
+                        g.hand_value(s).map(|hv| hv.category.name().to_string()).unwrap_or_default()
                     }
+                } else if player.all_in {
+                    "all-in".to_string()
+                } else if player.folded {
+                    "folded".to_string()
                 } else {
-                    let tag = if player.all_in {
-                        " all-in"
-                    } else if player.folded {
-                        " (folded)"
-                    } else {
-                        ""
-                    };
-                    format!("${}{}", player.stack, tag)
+                    String::new()
+                };
+                let content = if second.is_empty() {
+                    format!("${}", player.stack)
+                } else {
+                    format!("${}\n{}", player.stack, second)
                 };
                 *text = Text::new(content);
                 *vis = Visibility::Visible;
@@ -3482,6 +3524,36 @@ mod sfx_tests {
 #[cfg(test)]
 mod bubble_tests {
     use super::*;
+
+    /// Bubble's behaviour must actually produce walks (and valid ones): a stroll
+    /// should head to a target inside his roaming range with the correct facing.
+    #[test]
+    fn bubble_walks_often_and_within_bounds() {
+        let mut walks = 0;
+        let n = 1000;
+        for i in 0..n {
+            let r = i as f32 / n as f32; // sweep the full 0..1 roll
+            let target = ((i * 37) % n) as f32 / n as f32;
+            let (next, until, from, to) = bubble_next(BarState::Front, -7.5, r, target, 10.0);
+            assert!(until > 10.0, "next decision must be in the future");
+            if matches!(next, BarState::WalkLeft | BarState::WalkRight) {
+                walks += 1;
+                assert!(
+                    (BUBBLE_WALK_MIN..=BUBBLE_WALK_MAX).contains(&to),
+                    "walk target {to} out of range"
+                );
+                assert_eq!(from, -7.5, "walk should start from current position");
+                let correct_dir = if to < -7.5 {
+                    BarState::WalkLeft
+                } else {
+                    BarState::WalkRight
+                };
+                assert_eq!(next, correct_dir, "walk facing must match direction");
+            }
+        }
+        // Walking is the most common choice (~60% from Front), so it dominates.
+        assert!(walks > n / 2, "expected lots of walks, got {walks}/{n}");
+    }
 
     /// All four directional sprites must be discovered from the Bubble folder
     /// (not the single-image fallback) now that the art is in the repo.
