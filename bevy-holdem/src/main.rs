@@ -1821,7 +1821,7 @@ fn setup(
         commands.insert_resource(Music {
             songs,
             current: 0,
-            vol: 0.5,
+            vol: 0.25,
             on: true,
             last_street: Street::HandOver,
             fade: 1.0,
