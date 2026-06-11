@@ -271,13 +271,29 @@ struct Sfx {
 }
 
 /// Small RNG for picking/jittering sound effects (independent of the deck RNG).
+/// Also carries the live SFX master volume + on/off so every `play_sfx` honours
+/// the audio settings without threading a separate resource everywhere.
 #[derive(Resource)]
-struct SfxRng(u64);
+struct SfxRng {
+    state: u64,
+    sfx_vol: f32,
+    sfx_on: bool,
+}
 
 impl SfxRng {
+    fn new(seed: u64) -> Self {
+        SfxRng {
+            state: seed,
+            sfx_vol: 0.8,
+            sfx_on: true,
+        }
+    }
     fn next_u32(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (self.0 >> 33) as u32
+        self.state = self
+            .state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (self.state >> 33) as u32
     }
     fn unit(&mut self) -> f32 {
         (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
@@ -295,19 +311,73 @@ impl SfxRng {
     }
 }
 
-/// Spawn a one-shot sound with randomized pitch + volume.
+/// Spawn a one-shot sound with randomized pitch + volume, scaled by the master
+/// SFX volume (and skipped entirely when SFX are switched off).
 fn play_sfx(commands: &mut Commands, h: &Handle<AudioSource>, rng: &mut SfxRng) {
+    if !rng.sfx_on || rng.sfx_vol <= 0.0 {
+        return;
+    }
     let (speed, vol) = rng.jitter();
     commands.spawn((
         AudioPlayer(h.clone()),
         PlaybackSettings {
             mode: PlaybackMode::Despawn,
-            volume: Volume::Linear(vol),
+            volume: Volume::Linear(vol * rng.sfx_vol),
             speed,
             ..default()
         },
     ));
 }
+
+/// Which overlay the app is showing: the title screen, the pause menu, or
+/// neither (playing). `screenshot` keeps the game frozen for headless captures.
+#[derive(Resource)]
+struct AppUi {
+    on_title: bool,
+    paused: bool,
+    screenshot: bool,
+}
+
+/// The two independently-controllable audio channels in the options menu.
+#[derive(Clone, Copy, PartialEq)]
+enum VolKind {
+    Sfx,
+    Music,
+}
+
+#[derive(Component)]
+struct TitleScreen;
+#[derive(Component)]
+struct PauseMenu;
+/// A draggable volume bar (the track) for one channel.
+#[derive(Component)]
+struct VolSlider(VolKind);
+/// The green fill inside a volume bar.
+#[derive(Component)]
+struct VolFill(VolKind);
+/// An on/off checkbox button for one channel.
+#[derive(Component)]
+struct VolToggle(VolKind);
+/// The check-mark text inside a toggle.
+#[derive(Component)]
+struct VolToggleMark(VolKind);
+
+/// Background music discovered from the `music/` folder. A fresh song plays at
+/// the start of each round, loops if it finishes mid-round, and fades out when
+/// the round ends.
+#[derive(Resource)]
+struct Music {
+    songs: Vec<Handle<AudioSource>>,
+    current: usize,
+    vol: f32,
+    on: bool,
+    last_street: Street,
+    /// Current fade level (1 = full, 0 = silent) and whether we're fading out.
+    fade: f32,
+    fading: bool,
+}
+#[derive(Component)]
+struct MusicTrack;
 
 /// Set true after the game state changes; the redraw system rebuilds the props.
 #[derive(Resource)]
@@ -322,6 +392,9 @@ struct ShotState {
 }
 
 fn main() {
+    // Headless captures (SCREENSHOT / DEAL_DEMO) skip the title screen.
+    let screenshot_env = env::var("SCREENSHOT").is_ok();
+    let demo_env = env::var("DEAL_DEMO").is_ok();
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
@@ -335,7 +408,13 @@ fn main() {
     .insert_resource(build_poker())
     .insert_resource(NeedsRedraw(true))
     .insert_resource(BetSlider { frac: 0.5 })
-    .insert_resource(SfxRng(
+    .insert_resource(AppUi {
+        // SHOW_TITLE / SHOW_PAUSE force an overlay on for headless capture.
+        on_title: (!screenshot_env && !demo_env) || env::var("SHOW_TITLE").is_ok(),
+        paused: env::var("SHOW_PAUSE").is_ok(),
+        screenshot: screenshot_env && !demo_env,
+    })
+    .insert_resource(SfxRng::new(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64 | 1)
@@ -364,6 +443,17 @@ fn main() {
             my_money,
             human_cards_ui,
             seat_visibility,
+        ),
+    )
+    .add_systems(
+        Update,
+        (
+            sync_pause,
+            ui_input,
+            ui_overlays,
+            music_system,
+            volume_controls,
+            volume_toggle,
         ),
     );
 
@@ -1724,6 +1814,113 @@ fn setup(
             });
         });
 
+    // --- background music: discover the songs in assets/music ---
+    {
+        let songs: Vec<Handle<AudioSource>> =
+            scan_music().iter().map(|p| asset_server.load(p.clone())).collect();
+        commands.insert_resource(Music {
+            songs,
+            current: 0,
+            vol: 0.5,
+            on: true,
+            last_street: Street::HandOver,
+            fade: 1.0,
+            fading: false,
+        });
+    }
+
+    // --- title screen overlay (dismiss with click / Enter) ---
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                row_gap: Val::Px(18.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.02, 0.02, 0.05, 0.72)),
+            Visibility::Hidden,
+            GlobalZIndex(50),
+            TitleScreen,
+        ))
+        .with_children(|t| {
+            t.spawn((
+                Text::new("CARTOON HOLD'EM"),
+                TextFont {
+                    font_size: 66.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.85, 0.4)),
+            ));
+            t.spawn((
+                Text::new("click or press  Enter  to play"),
+                TextFont {
+                    font_size: 24.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.9, 0.9, 0.85)),
+            ));
+        });
+
+    // --- pause menu overlay (toggle with Enter); audio options inside ---
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            Visibility::Hidden,
+            GlobalZIndex(60),
+            PauseMenu,
+        ))
+        .with_children(|m| {
+            m.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(20.0),
+                    padding: UiRect::axes(Val::Px(40.0), Val::Px(30.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.07, 0.08, 0.10, 0.96)),
+                BorderColor::all(Color::srgb(0.85, 0.72, 0.35)),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("PAUSED"),
+                    TextFont {
+                        font_size: 42.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.85, 0.4)),
+                ));
+                spawn_volume_row(panel, "Sound FX", VolKind::Sfx);
+                spawn_volume_row(panel, "Music", VolKind::Music);
+                panel.spawn((
+                    Text::new("press  Enter  to resume"),
+                    TextFont {
+                        font_size: 17.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.7, 0.7, 0.66)),
+                ));
+            });
+        });
+
     // --- ashtray with two cigarettes, off to the back-right of the felt ---
     let ash_x = 3.0;
     let ash_z = -1.5;
@@ -2064,6 +2261,123 @@ fn scan_sfx() -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+/// List the song files under `assets/music`, sorted, as asset-relative paths.
+fn scan_music() -> Vec<String> {
+    let roots = [env::var("BEVY_ASSET_ROOT").ok(), Some("assets".to_string())];
+    for root in roots.into_iter().flatten() {
+        let base = std::path::Path::new(&root).join("music");
+        if !base.is_dir() {
+            continue;
+        }
+        let mut out = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&base) {
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if matches!(
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_lowercase())
+                        .as_deref(),
+                    Some("ogg") | Some("wav") | Some("mp3") | Some("flac")
+                ) {
+                    if let Ok(rel) = p.strip_prefix(&root) {
+                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+        if !out.is_empty() {
+            out.sort();
+            return out;
+        }
+    }
+    Vec::new()
+}
+
+/// Width (px) of the options-menu volume bars.
+const VOL_W: f32 = 200.0;
+
+/// Spawn one labelled audio row in the pause menu: a name, an on/off checkbox,
+/// and a draggable volume bar, all tagged with the channel `kind`.
+fn spawn_volume_row(
+    parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
+    label: &str,
+    kind: VolKind,
+) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(14.0),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size: 22.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.92, 0.92, 0.88)),
+                Node {
+                    width: Val::Px(110.0),
+                    ..default()
+                },
+            ));
+            // on/off checkbox
+            row.spawn((
+                Button,
+                Node {
+                    width: Val::Px(28.0),
+                    height: Val::Px(28.0),
+                    border: UiRect::all(Val::Px(2.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.4)),
+                BorderColor::all(Color::srgb(0.8, 0.7, 0.35)),
+                VolToggle(kind),
+            ))
+            .with_children(|c| {
+                c.spawn((
+                    Text::new("X"),
+                    TextFont {
+                        font_size: 20.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.45, 0.92, 0.55)),
+                    VolToggleMark(kind),
+                ));
+            });
+            // draggable volume bar (track + green fill)
+            row.spawn((
+                Node {
+                    width: Val::Px(VOL_W),
+                    height: Val::Px(22.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.12, 0.13, 0.14)),
+                RelativeCursorPosition::default(),
+                VolSlider(kind),
+            ))
+            .with_children(|track| {
+                track.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        top: Val::Px(0.0),
+                        bottom: Val::Px(0.0),
+                        width: Val::Percent(50.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.24, 0.62, 0.34)),
+                    VolFill(kind),
+                ));
+            });
+        });
 }
 
 /// Find Bubble's directional sprites: looks for a `characters/bubble/` folder
@@ -2501,12 +2815,18 @@ fn slider_amount(g: &Game, frac: f32) -> u32 {
 /// Note: `normalized` is centre-relative, −0.5 (left) .. +0.5 (right).
 fn slider_system(
     mouse: Res<ButtonInput<MouseButton>>,
+    poker: Res<Poker>,
     mut slider: ResMut<BetSlider>,
     track: Query<&RelativeCursorPosition, With<SliderTrack>>,
     mut fill: Query<&mut Node, (With<SliderFill>, Without<SliderHandle>)>,
     mut handle: Query<&mut Node, (With<SliderHandle>, Without<SliderFill>)>,
     mut dragging: Local<bool>,
 ) {
+    // Don't drag the bet slider while a menu/title overlay is up.
+    if poker.paused {
+        *dragging = false;
+        return;
+    }
     if !mouse.pressed(MouseButton::Left) {
         *dragging = false;
     }
@@ -2561,7 +2881,8 @@ fn next_round(
         return;
     }
 
-    let mut go = keys.just_pressed(KeyCode::Space) || keys.just_pressed(KeyCode::Enter);
+    // Space (or the button) deals the next hand; Enter is reserved for pause.
+    let mut go = keys.just_pressed(KeyCode::Space);
     for (interaction, mut bg) in &mut btn {
         match *interaction {
             Interaction::Pressed => {
@@ -2605,7 +2926,8 @@ fn betting_ui(
     mut texts: Query<&mut Text>,
 ) {
     let g = &poker.game;
-    let my_turn = !poker.dealing
+    let my_turn = !poker.paused
+        && !poker.dealing
         && !poker.comm_anim
         && g.street != Street::HandOver
         && g.to_act == 0
@@ -3473,6 +3795,193 @@ fn money_labels(
     }
 }
 
+/// Fold the title/pause/screenshot overlays into the master freeze flag the
+/// game-driving systems already respect.
+fn sync_pause(ui: Res<AppUi>, mut poker: ResMut<Poker>) {
+    let frozen = ui.screenshot || ui.on_title || ui.paused;
+    if poker.paused != frozen {
+        poker.paused = frozen;
+    }
+}
+
+/// Dismiss the title (click / Enter / Space) and toggle the pause menu (Enter).
+fn ui_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut ui: ResMut<AppUi>,
+) {
+    if ui.screenshot {
+        return;
+    }
+    if ui.on_title {
+        if keys.just_pressed(KeyCode::Enter)
+            || keys.just_pressed(KeyCode::Space)
+            || mouse.just_pressed(MouseButton::Left)
+        {
+            ui.on_title = false;
+        }
+        return;
+    }
+    if keys.just_pressed(KeyCode::Enter) {
+        ui.paused = !ui.paused;
+    }
+}
+
+/// Show/hide the title and pause overlays from the UI state.
+fn ui_overlays(
+    ui: Res<AppUi>,
+    mut title: Query<&mut Visibility, (With<TitleScreen>, Without<PauseMenu>)>,
+    mut pause: Query<&mut Visibility, (With<PauseMenu>, Without<TitleScreen>)>,
+) {
+    let tv = if ui.on_title {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut title {
+        *v = tv;
+    }
+    let pv = if ui.paused {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut pause {
+        *v = pv;
+    }
+}
+
+/// Background music: a fresh looping song at the start of each round, faded out
+/// when the round ends, with live volume/mute from the options menu.
+fn music_system(
+    time: Res<Time>,
+    ui: Res<AppUi>,
+    poker: Res<Poker>,
+    mut music: ResMut<Music>,
+    mut commands: Commands,
+    all_tracks: Query<Entity, With<MusicTrack>>,
+    mut sinks: Query<&mut AudioSink, With<MusicTrack>>,
+) {
+    if music.songs.is_empty() || ui.on_title {
+        return;
+    }
+    let street = poker.game.street;
+
+    // Round start (entering Preflop): switch to the next song and loop it.
+    if street == Street::Preflop && music.last_street != Street::Preflop {
+        for e in &all_tracks {
+            commands.entity(e).despawn();
+        }
+        let idx = music.current % music.songs.len();
+        music.current = (music.current + 1) % music.songs.len();
+        music.fade = 1.0;
+        music.fading = false;
+        let vol = if music.on { music.vol } else { 0.0 };
+        commands.spawn((
+            AudioPlayer(music.songs[idx].clone()),
+            PlaybackSettings {
+                mode: PlaybackMode::Loop,
+                volume: Volume::Linear(vol),
+                ..default()
+            },
+            MusicTrack,
+        ));
+    }
+    // Round end (entering HandOver): fade out.
+    if street == Street::HandOver && music.last_street != Street::HandOver {
+        music.fading = true;
+    }
+    music.last_street = street;
+
+    // Drive the fade and apply live volume/mute to the playing track.
+    if music.fading {
+        music.fade = (music.fade - time.delta_secs() / 1.4).max(0.0);
+    }
+    let target = if music.on { music.vol * music.fade } else { 0.0 };
+    for mut sink in &mut sinks {
+        sink.set_volume(Volume::Linear(target));
+    }
+    if music.fading && music.fade <= 0.0 {
+        for e in &all_tracks {
+            commands.entity(e).despawn();
+        }
+        music.fading = false;
+    }
+}
+
+/// Drag the options-menu volume bars and reflect the live values in the fills
+/// and the on/off check-marks.
+fn volume_controls(
+    ui: Res<AppUi>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut sfx: ResMut<SfxRng>,
+    mut music: ResMut<Music>,
+    tracks: Query<(&VolSlider, &RelativeCursorPosition)>,
+    mut fills: Query<(&VolFill, &mut Node)>,
+    mut marks: Query<(&VolToggleMark, &mut Visibility)>,
+    mut drag: Local<Option<VolKind>>,
+) {
+    if !ui.paused {
+        *drag = None;
+        return;
+    }
+    if !mouse.pressed(MouseButton::Left) {
+        *drag = None;
+    }
+    for (slider, rel) in &tracks {
+        if mouse.just_pressed(MouseButton::Left) && rel.cursor_over {
+            *drag = Some(slider.0);
+        }
+        if *drag == Some(slider.0) {
+            if let Some(n) = rel.normalized {
+                let v = (n.x + 0.5).clamp(0.0, 1.0);
+                match slider.0 {
+                    VolKind::Sfx => sfx.sfx_vol = v,
+                    VolKind::Music => music.vol = v,
+                }
+            }
+        }
+    }
+    for (fill, mut node) in &mut fills {
+        let v = match fill.0 {
+            VolKind::Sfx => sfx.sfx_vol,
+            VolKind::Music => music.vol,
+        };
+        node.width = Val::Percent(v * 100.0);
+    }
+    for (mark, mut vis) in &mut marks {
+        let on = match mark.0 {
+            VolKind::Sfx => sfx.sfx_on,
+            VolKind::Music => music.on,
+        };
+        *vis = if on {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// Toggle a channel on/off when its checkbox is clicked.
+fn volume_toggle(
+    ui: Res<AppUi>,
+    q: Query<(&VolToggle, &Interaction), Changed<Interaction>>,
+    mut sfx: ResMut<SfxRng>,
+    mut music: ResMut<Music>,
+) {
+    if !ui.paused {
+        return;
+    }
+    for (tog, interaction) in &q {
+        if *interaction == Interaction::Pressed {
+            match tog.0 {
+                VolKind::Sfx => sfx.sfx_on = !sfx.sfx_on,
+                VolKind::Music => music.on = !music.on,
+            }
+        }
+    }
+}
+
 fn street_name(s: Street) -> &'static str {
     match s {
         Street::Preflop => "Preflop",
@@ -3511,7 +4020,7 @@ mod sfx_tests {
         );
 
         // Picking 500 times must select every file (uniform RNG over 10 items).
-        let mut rng = SfxRng(12345);
+        let mut rng = SfxRng::new(12345);
         let mut hits = vec![0u32; deals.len()];
         for _ in 0..500 {
             let p = rng.pick(&deals).unwrap();
