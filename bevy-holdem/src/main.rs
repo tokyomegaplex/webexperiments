@@ -3143,9 +3143,9 @@ fn bubble_next(
 ) -> (BarState, f32, f32, f32) {
     let walk_to = || BUBBLE_WALK_MIN + walk_target * (BUBBLE_WALK_MAX - BUBBLE_WALK_MIN);
     match state {
-        // After a walk or tending the bar, often set off on another stroll.
+        // After a walk or tending the bar, mostly settle for a while.
         BarState::WalkLeft | BarState::WalkRight | BarState::Bar => {
-            if r < 0.55 {
+            if r < 0.18 {
                 let to = walk_to();
                 let dur = ((to - base_x).abs() / BUBBLE_WALK_SPEED).max(0.5);
                 let dir = if to < base_x {
@@ -3154,15 +3154,16 @@ fn bubble_next(
                     BarState::WalkRight
                 };
                 (dir, now + dur, base_x, to)
-            } else if r < 0.78 {
-                (BarState::Front, now + 1.5 + walk_target * 2.0, base_x, base_x)
+            } else if r < 0.62 {
+                (BarState::Front, now + 3.5 + walk_target * 4.0, base_x, base_x)
             } else {
-                (BarState::Bar, now + 1.5 + walk_target * 2.0, base_x, base_x)
+                (BarState::Bar, now + 3.0 + walk_target * 4.0, base_x, base_x)
             }
         }
-        // While idling out front, mostly go for a walk.
+        // While idling out front: usually keep idling or tend the bar; the
+        // occasional stroll.
         BarState::Front => {
-            if r < 0.60 {
+            if r < 0.25 {
                 let to = walk_to();
                 let dur = ((to - base_x).abs() / BUBBLE_WALK_SPEED).max(0.5);
                 let dir = if to < base_x {
@@ -3171,10 +3172,10 @@ fn bubble_next(
                     BarState::WalkRight
                 };
                 (dir, now + dur, base_x, to)
-            } else if r < 0.80 {
-                (BarState::Bar, now + 1.5 + walk_target * 2.0, base_x, base_x)
+            } else if r < 0.55 {
+                (BarState::Bar, now + 3.0 + walk_target * 4.0, base_x, base_x)
             } else {
-                (BarState::Front, now + 1.5 + walk_target * 2.0, base_x, base_x)
+                (BarState::Front, now + 3.5 + walk_target * 4.0, base_x, base_x)
             }
         }
     }
@@ -3219,11 +3220,14 @@ fn bar_standee(
         }
 
         // --- sprite facing ---
+        // The billboard quad is rotated to face the camera, which mirrors
+        // world-x relative to the texture — so walking left needs the *right*
+        // sprite and vice versa for him to look where he's going.
         let idx = match b.state {
             BarState::Front => 0,
             BarState::Bar => 1,
-            BarState::WalkLeft => 2,
-            BarState::WalkRight => 3,
+            BarState::WalkLeft => 3,
+            BarState::WalkRight => 2,
         };
         if mat.0 != b.mats[idx] {
             mat.0 = b.mats[idx].clone();
@@ -3551,8 +3555,11 @@ mod bubble_tests {
                 assert_eq!(next, correct_dir, "walk facing must match direction");
             }
         }
-        // Walking is the most common choice (~60% from Front), so it dominates.
-        assert!(walks > n / 2, "expected lots of walks, got {walks}/{n}");
+        // He strolls now and then (~25% from Front) but mostly idles.
+        assert!(
+            walks > n / 8 && walks < n / 2,
+            "walk frequency out of band: {walks}/{n}"
+        );
     }
 
     /// All four directional sprites must be discovered from the Bubble folder
