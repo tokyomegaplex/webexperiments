@@ -93,6 +93,25 @@ fn hand_category_ordering() {
 }
 
 #[test]
+fn short_raise_below_current_bet_is_an_all_in_call() {
+    // A player whose entire stack can't cover the current bet "raises" — this
+    // must not panic (regression: clamp(min,max) with min>max), and should just
+    // move them all-in for what they have.
+    let mut g = Game::new(test_players(&[990, 5000]), 5, 10, 1);
+    g.button = 0;
+    g.street = Street::Flop;
+    g.to_act = 0;
+    g.current_bet = 1123; // a bet larger than seat 0's stack
+    g.players[1].bet = 1123;
+    g.players[1].committed = 1123;
+    // Seat 0 tries to raise way beyond what it can afford.
+    g.apply(Action::Raise(3000));
+    assert_eq!(g.players[0].stack, 0, "seat 0 is all-in");
+    assert!(g.players[0].all_in);
+    assert_eq!(g.players[0].bet, 990, "moved their whole stack, no more");
+}
+
+#[test]
 fn hand_descriptions_name_the_ranks() {
     assert_eq!(eval(&["Kh", "Kd", "9s", "5c", "2d"]).describe(), "a Pair of Kings");
     assert_eq!(

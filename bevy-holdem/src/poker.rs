@@ -670,7 +670,10 @@ impl Game {
             }
             Action::Raise(to) => {
                 let max_to = self.max_raise_to(seat);
-                let to = to.clamp(self.current_bet, max_to);
+                // A "raise" whose whole stack can't even cover the current bet is
+                // really a short all-in call. Clamp the low bound to `max_to` too
+                // so `min <= max` (a bare clamp would panic when current_bet > max_to).
+                let to = to.clamp(self.current_bet.min(max_to), max_to);
                 let add = to - self.players[seat].bet;
                 self.move_chips(seat, add);
                 let increment = to.saturating_sub(self.current_bet);
