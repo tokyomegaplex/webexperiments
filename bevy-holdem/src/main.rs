@@ -1553,7 +1553,13 @@ fn setup(
             NotShadowCaster,
             Standee {
                 base,
-                base_scale: Vec3::ONE,
+                // Mirror Jaack horizontally so he faces the other way (negative
+                // X scale flips the billboard art left-to-right).
+                base_scale: if c.id == "jaack" {
+                    Vec3::new(-1.0, 1.0, 1.0)
+                } else {
+                    Vec3::ONE
+                },
                 seed: i as f32 * 1.7 + 0.3,
                 yaw_offset: if i == 0 {
                     0.16
