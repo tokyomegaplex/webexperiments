@@ -1236,7 +1236,9 @@ fn setup(
     // --- Bubble the bartender: a billboard standee behind the counter, with
     // directional sprites so he can idle, turn to the bar, and stroll around ---
     {
-        let base = Vec3::new(-7.5, floor_y + 2.5, bar_z + 0.5);
+        // Raised so his body clears the counter top — his wide billboard used to
+        // sweep through the bar when it rotated to face the camera.
+        let base = Vec3::new(-7.5, floor_y + 3.5, bar_z + 0.5);
         let sprites = bubble_sprites();
         let mats: [Handle<StandardMaterial>; 4] = sprites.map(|path| {
             let tex = asset_server.load(path);
@@ -1547,8 +1549,11 @@ fn setup(
         let material = default_mats[0].clone();
 
         // Feet on the floor; the raised table edge crosses the lower body so
-        // they read as seated rather than floating.
-        let base = Vec3::new(x, floor_y + quad_h / 2.0, z);
+        // they read as seated rather than floating. Some characters get a size
+        // bump (and their feet kept on the floor by raising the centre).
+        let char_scale = if c.id == "mejdk" { 1.5 } else { 1.0 };
+        let flip_x = if c.id == "jaack" { -1.0 } else { 1.0 };
+        let base = Vec3::new(x, floor_y + quad_h * char_scale / 2.0, z);
         commands.spawn((
             Mesh3d(quad.clone()),
             MeshMaterial3d(material),
@@ -1567,13 +1572,9 @@ fn setup(
             NotShadowCaster,
             Standee {
                 base,
-                // Mirror Jaack horizontally so he faces the other way (negative
-                // X scale flips the billboard art left-to-right).
-                base_scale: if c.id == "jaack" {
-                    Vec3::new(-1.0, 1.0, 1.0)
-                } else {
-                    Vec3::ONE
-                },
+                // Per-character size, with Jaack mirrored (negative X) so he
+                // faces the other way.
+                base_scale: Vec3::new(flip_x * char_scale, char_scale, 1.0),
                 seed: i as f32 * 1.7 + 0.3,
                 yaw_offset: if i == 0 {
                     0.16
@@ -1611,7 +1612,7 @@ fn setup(
             cull_mode: None,
             ..default()
         });
-        let plate_pos = Vec3::new(x, floor_y + quad_h + 0.15, z);
+        let plate_pos = Vec3::new(x, floor_y + quad_h * char_scale + 0.15, z);
         let away = plate_pos + (plate_pos - cam_pos); // so +Z faces the camera
         commands.spawn((
             Mesh3d(plate_quad.clone()),
@@ -1631,6 +1632,8 @@ fn setup(
         base_color: Color::WHITE,
         base_color_texture: Some(asset_server.load("cards/back.png")),
         perceptual_roughness: 0.5,
+        // Cut out the rounded corners (transparent in the art) for a clean edge.
+        alpha_mode: AlphaMode::Mask(0.5),
         ..default()
     });
 
@@ -2628,9 +2631,14 @@ fn standee_system(
             sy *= 1.0 - p * 0.07;
         }
 
-        t.translation = pos;
+        // Nudge the standee toward the camera so its (camera-facing, flat) plane
+        // sits in front of the fixed chair from any angle — it then cleanly
+        // occludes the chair instead of the billboard intersecting it. Fades out
+        // as they walk away to the bar.
+        let to_cam = (Vec3::new(cam_pos.x, pos.y, cam_pos.z) - pos).normalize_or_zero();
+        pos += to_cam * 0.45 * (1.0 - s.walk);
 
-        // Face the camera, yaw only (target at the standee's own height).
+        t.translation = pos;
         let target = Vec3::new(cam_pos.x, pos.y, cam_pos.z);
         t.look_at(target, Vec3::Y);
 
@@ -3836,6 +3844,9 @@ fn face_material(
         base_color_texture: Some(asset_server.load(format!("cards/{code}.png"))),
         // Unlit so the rank/suit colours read true (no cool-light tint).
         unlit: true,
+        // Stencil-cutout the rounded corners: the art is transparent outside the
+        // card, so mask those pixels out instead of rendering them black.
+        alpha_mode: AlphaMode::Mask(0.5),
         ..default()
     });
     faces.0.insert(code.to_string(), h.clone());
