@@ -213,6 +213,18 @@ struct EnvPenthouse;
 #[derive(Component)]
 struct NamePlate;
 
+/// The warm winner glow billboard; faces the live camera each frame so it reads
+/// from any viewpoint (anchored at the winner's standee).
+#[derive(Component)]
+struct WinGlow {
+    anchor: Vec3,
+}
+
+/// The beer that sits in front of you while you spectate from the bar (a 3D prop
+/// pinned in camera space, shown only when busted).
+#[derive(Component)]
+struct SpectateBeer;
+
 /// One piece of the chair behind a standee. The whole chair swivels around the
 /// standee to stay directly behind it *as seen from the live camera*, so the
 /// flat billboard never clips through it from any viewpoint.
@@ -598,6 +610,8 @@ fn main() {
             camera_rig,
             chair_rig,
             name_plates,
+            win_glow,
+            spectate_beer,
             environment_visibility,
             hud_panel_toggle,
             pot_label,
@@ -2049,6 +2063,69 @@ fn setup(
                 ));
             });
         });
+
+    // --- your beer (shown only while spectating from the bar after busting);
+    // pinned in front of the camera by `spectate_beer` ---
+    {
+        let glass = materials.add(StandardMaterial {
+            base_color: Color::srgba(0.95, 0.85, 0.55, 0.45),
+            alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 0.1,
+            reflectance: 0.5,
+            ..default()
+        });
+        let beer = materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(214, 150, 28),
+            emissive: LinearRgba::rgb(0.5, 0.32, 0.05),
+            perceptual_roughness: 0.3,
+            ..default()
+        });
+        let foam = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.98, 0.96, 0.9),
+            perceptual_roughness: 0.9,
+            ..default()
+        });
+        commands
+            .spawn((
+                Transform::from_translation(Vec3::new(0.0, -50.0, 0.0)),
+                Visibility::Hidden,
+                SpectateBeer,
+            ))
+            .with_children(|m| {
+                // amber beer column
+                m.spawn((
+                    Mesh3d(meshes.add(Cylinder::new(0.12, 0.30))),
+                    MeshMaterial3d(beer.clone()),
+                    Transform::from_xyz(0.0, 0.0, 0.0),
+                    NotShadowCaster,
+                ));
+                // glass rim around it
+                m.spawn((
+                    Mesh3d(meshes.add(Cylinder::new(0.135, 0.34))),
+                    MeshMaterial3d(glass.clone()),
+                    Transform::from_xyz(0.0, 0.01, 0.0),
+                    NotShadowCaster,
+                ));
+                // foam head
+                m.spawn((
+                    Mesh3d(meshes.add(Cylinder::new(0.135, 0.06))),
+                    MeshMaterial3d(foam.clone()),
+                    Transform::from_xyz(0.0, 0.18, 0.0),
+                    NotShadowCaster,
+                ));
+                // handle
+                m.spawn((
+                    Mesh3d(meshes.add(Torus {
+                        minor_radius: 0.022,
+                        major_radius: 0.085,
+                    })),
+                    MeshMaterial3d(glass.clone()),
+                    Transform::from_xyz(0.155, 0.0, 0.0)
+                        .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+                    NotShadowCaster,
+                ));
+            });
+    }
 
     // --- penthouse environment (hidden until you "Enter the Penthouse"): a
     // floor-to-ceiling city window that sits in front of the bar (occluding it),
@@ -3739,6 +3816,7 @@ fn redraw_table(
                     .looking_at(cam, Vec3::Y)
                     .with_scale(Vec3::splat(5.0)),
                 TableProp,
+                WinGlow { anchor: pos },
             ));
         }
     }
@@ -4647,25 +4725,44 @@ fn spectate_advance(
     }
 }
 
-/// Smoothly move the camera to a spectator spot by the bar when the human has
-/// busted, and back to the playing view otherwise.
+/// Smoothly move the camera to a spectator spot when the human busts. Mostly it
+/// watches the table from afar, but every so often it turns to look over at the
+/// bar where the other knocked-out players are nursing their drinks.
 fn camera_rig(
     mode: Res<GameMode>,
     time: Res<Time>,
     mut cam: Query<&mut Transform, With<MainCamera>>,
+    mut phase: Local<f32>,
+    mut at_bar: Local<bool>,
 ) {
     let Ok(mut t) = cam.single_mut() else {
         return;
     };
     let (target, look) = if *mode == GameMode::Busted {
-        // Well back by the bar, taking in the whole table from afar.
-        (Vec3::new(-10.5, 4.6, -9.0), Vec3::new(1.2, 0.9, 1.6))
+        // Cycle: ~10s watching the table, then ~5s glancing over at the bar.
+        *phase += time.delta_secs();
+        let dwell = if *at_bar { 5.0 } else { 10.0 };
+        if *phase > dwell {
+            *phase = 0.0;
+            *at_bar = !*at_bar;
+        }
+        if *at_bar {
+            // Seated at the bar end, looking down the line of stools.
+            (Vec3::new(-10.5, 3.2, -9.5), Vec3::new(3.0, 2.2, -12.0))
+        } else {
+            // Well back by the bar, taking in the whole table from afar.
+            (Vec3::new(-10.5, 4.6, -9.0), Vec3::new(1.2, 0.9, 1.6))
+        }
     } else {
+        *phase = 0.0;
+        *at_bar = false;
         (Vec3::new(0.0, 4.7, 10.4), Vec3::new(0.0, 1.8, -2.0))
     };
     let k = (time.delta_secs() * 1.6).min(1.0);
     let pos = t.translation.lerp(target, k);
-    *t = Transform::from_translation(pos).looking_at(look, Vec3::Y);
+    let cur_look = t.rotation * Vec3::NEG_Z; // smoothly turn the gaze too
+    let new_look = pos + cur_look.lerp((look - pos).normalize_or_zero(), k);
+    *t = Transform::from_translation(pos).looking_at(new_look, Vec3::Y);
 }
 
 /// Drive the end-of-game overlay: headline, the New Game / Penthouse buttons,
@@ -4835,23 +4932,18 @@ fn action_ticker(
 
 /// Swivel each chair around its standee so it stays directly behind the
 /// billboard as seen from the live camera — the standee then never clips it.
-fn chair_rig(
-    camera: Query<&Transform, (With<MainCamera>, Without<ChairPart>)>,
-    mut q: Query<(&ChairPart, &mut Transform)>,
-) {
-    let Ok(cam) = camera.single() else {
-        return;
-    };
-    let cam_pos = cam.translation;
+fn chair_rig(mut q: Query<(&ChairPart, &mut Transform)>) {
     for (part, mut t) in &mut q {
-        let to_cam = Vec2::new(cam_pos.x - part.anchor.x, cam_pos.z - part.anchor.z)
-            .normalize_or_zero();
-        let cyaw = to_cam.x.atan2(to_cam.y);
+        // Fixed: a chair behind each seat, set radially outward from the table
+        // centre and facing inward, so it never swings over the table (the old
+        // camera-relative placement pushed it onto the felt from oblique views).
+        let rad = Vec2::new(part.anchor.x, part.anchor.z).normalize_or_zero();
+        let cyaw = (-rad.x).atan2(-rad.y); // backrest faces the table centre
         let crot = Quat::from_rotation_y(cyaw);
         let back = Vec3::new(
-            part.anchor.x - to_cam.x * 0.55,
+            part.anchor.x + rad.x * 0.5,
             part.anchor.y + 2.0,
-            part.anchor.z - to_cam.y * 0.55,
+            part.anchor.z + rad.y * 0.5,
         );
         let pos = if part.is_post {
             let cright = crot * Vec3::X;
@@ -4860,6 +4952,53 @@ fn chair_rig(
             back
         };
         *t = Transform::from_translation(pos).with_rotation(crot);
+    }
+}
+
+/// Pin the spectate beer in front of the camera (lower-right, upright) while
+/// you're busted, and hide it otherwise.
+fn spectate_beer(
+    mode: Res<GameMode>,
+    camera: Query<&Transform, (With<MainCamera>, Without<SpectateBeer>)>,
+    mut q: Query<(&mut Transform, &mut Visibility), With<SpectateBeer>>,
+) {
+    let busted = *mode == GameMode::Busted;
+    let Ok(cam) = camera.single() else {
+        return;
+    };
+    for (mut t, mut vis) in &mut q {
+        *vis = if busted {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        if busted {
+            let pos = cam.translation
+                + *cam.forward() * 1.5
+                + *cam.right() * 0.6
+                + *cam.up() * -0.62;
+            // Keep it upright in world space (don't tilt with the camera).
+            t.translation = pos;
+            t.rotation = Quat::IDENTITY;
+        }
+    }
+}
+
+/// Keep the winner glow billboard facing the live camera (and tucked just behind
+/// the winner from its view), so the halo reads from any angle.
+fn win_glow(
+    camera: Query<&Transform, (With<MainCamera>, Without<WinGlow>)>,
+    mut q: Query<(&WinGlow, &mut Transform)>,
+) {
+    let Ok(cam) = camera.single() else {
+        return;
+    };
+    let cam_pos = cam.translation;
+    for (g, mut t) in &mut q {
+        let to_cam = (cam_pos - g.anchor).normalize_or_zero();
+        *t = Transform::from_translation(g.anchor - to_cam * 0.6)
+            .looking_at(cam_pos, Vec3::Y)
+            .with_scale(Vec3::splat(5.0));
     }
 }
 
