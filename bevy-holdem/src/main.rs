@@ -437,6 +437,33 @@ enum Environment {
     Penthouse,
 }
 
+/// Escalating blind schedule (small, big). The clock advances one level every
+/// `BLIND_INTERVAL` of *active* play.
+const BLIND_LEVELS: [(u32, u32); 12] = [
+    (5, 10),
+    (10, 20),
+    (15, 30),
+    (25, 50),
+    (40, 80),
+    (60, 120),
+    (100, 200),
+    (150, 300),
+    (250, 500),
+    (400, 800),
+    (600, 1200),
+    (1000, 2000),
+];
+const BLIND_INTERVAL: f32 = 300.0; // 5 minutes of active play per level
+
+/// Tracks time toward the next blind increase. The clock only advances while the
+/// game is unpaused and the player is active (it stalls after 30s idle).
+#[derive(Resource)]
+struct BlindClock {
+    active: f32,
+    last_input: f32,
+    level: usize,
+}
+
 /// The end-of-game overlay (lose / win) and its parts.
 #[derive(Component)]
 struct GameOverRoot;
@@ -498,6 +525,11 @@ fn main() {
     } else {
         Environment::Bar
     })
+    .insert_resource(BlindClock {
+        active: 0.0,
+        last_input: 0.0,
+        level: 0,
+    })
     .insert_resource(SfxRng::new(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -548,6 +580,7 @@ fn main() {
             hud_panel_toggle,
             pot_label,
             action_ticker,
+            blind_clock,
         ),
     );
 
@@ -2474,6 +2507,7 @@ fn standee_system(
 fn human_cards_ui(
     time: Res<Time>,
     poker: Res<Poker>,
+    ui: Res<AppUi>,
     asset_server: Res<AssetServer>,
     camera: Query<(&Camera, &GlobalTransform)>,
     windows: Query<&Window>,
@@ -2482,7 +2516,7 @@ fn human_cards_ui(
     const CW: f32 = 112.0;
     const CH: f32 = 156.0;
     let human = &poker.game.players[0];
-    let show = human.in_hand() && !poker.dealing;
+    let show = human.in_hand() && !poker.dealing && !ui.on_title;
     let cam = camera.single().ok();
     let win_h = windows.single().map(|w| w.height()).unwrap_or(760.0);
 
@@ -2518,9 +2552,20 @@ fn human_cards_ui(
 }
 
 /// Update the bottom-right money counter (your stack, plus your current bet).
-fn my_money(poker: Res<Poker>, mut q: Query<&mut Text, With<MyMoney>>) {
+fn my_money(
+    poker: Res<Poker>,
+    ui: Res<AppUi>,
+    mut q: Query<(&mut Text, &mut Visibility), With<MyMoney>>,
+) {
     let g = &poker.game;
     let me = &g.players[0];
+    // Hidden on the start screen (no game in progress yet).
+    if ui.on_title {
+        for (_, mut vis) in &mut q {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    }
     let mut s = if me.bet > 0 {
         format!("${}  (bet ${})", me.stack, me.bet)
     } else {
@@ -2532,8 +2577,9 @@ fn my_money(poker: Res<Poker>, mut q: Query<&mut Text, With<MyMoney>>) {
             s = format!("${}  —  {}", me.stack, hv.category.name());
         }
     }
-    for mut t in &mut q {
+    for (mut t, mut vis) in &mut q {
         *t = Text::new(s.clone());
+        *vis = Visibility::Visible;
     }
 }
 
@@ -3386,6 +3432,7 @@ fn redraw_table(
     mut commands: Commands,
     mut needs: ResMut<NeedsRedraw>,
     poker: Res<Poker>,
+    ui: Res<AppUi>,
     assets: Res<PokerAssets>,
     mut faces: ResMut<CardFaces>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -3398,6 +3445,10 @@ fn redraw_table(
     needs.0 = false;
     for e in &props {
         commands.entity(e).despawn();
+    }
+    // The start screen shows an empty, ready table — no dealt hand, chips, or pot.
+    if ui.on_title {
+        return;
     }
 
     let g = &poker.game;
@@ -3706,7 +3757,13 @@ fn hud(
     mut banner_root: Query<&mut Visibility, With<WinBannerRoot>>,
 ) {
     let g = &poker.game;
-    let mut s = format!("{}    Pot ${}\n\n", street_name(g.street), g.pot());
+    let mut s = format!(
+        "{}    Pot ${}\nBlinds {}/{}\n\n",
+        street_name(g.street),
+        g.pot(),
+        g.small_blind,
+        g.big_blind
+    );
     for (i, p) in g.players.iter().enumerate() {
         let turn = if i == g.to_act && g.street != Street::HandOver {
             ">"
@@ -4070,12 +4127,19 @@ fn win_celebrate(
 /// from the world each frame).
 fn money_labels(
     poker: Res<Poker>,
+    ui: Res<AppUi>,
     camera: Query<(&Camera, &GlobalTransform)>,
     mut labels: Query<(&MoneyLabel, &mut Node, &mut Text, &mut Visibility)>,
 ) {
     let Ok((cam, cam_t)) = camera.single() else {
         return;
     };
+    if ui.on_title {
+        for (_, _, _, mut vis) in &mut labels {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    }
     let g = &poker.game;
     for (label, mut node, mut text, mut vis) in &mut labels {
         let s = label.0;
@@ -4350,6 +4414,8 @@ fn reset_game(poker: &mut Poker) {
         p.bet = 0;
         p.committed = 0;
     }
+    poker.game.small_blind = BLIND_LEVELS[0].0;
+    poker.game.big_blind = BLIND_LEVELS[0].1;
     poker.game.start_hand();
     poker.pending_deal = true;
     poker.dealing = false;
@@ -4442,6 +4508,7 @@ fn game_over_ui(
     mut mode: ResMut<GameMode>,
     mut env: ResMut<Environment>,
     mut poker: ResMut<Poker>,
+    mut clock: ResMut<BlindClock>,
     mut needs: ResMut<NeedsRedraw>,
     mut root: Query<&mut Visibility, (With<GameOverRoot>, Without<GameOverBtn>)>,
     mut title: Query<&mut Text, (With<GameOverTitle>, Without<GameOverSub>)>,
@@ -4500,20 +4567,16 @@ fn game_over_ui(
             Interaction::None => *bg = BackgroundColor(Color::srgb(0.2, 0.42, 0.26)),
         }
     }
-    match clicked {
-        Some(GameOverBtn::NewGame) => {
-            *env = Environment::Bar;
-            reset_game(&mut poker);
-            *mode = GameMode::Playing;
-            needs.0 = true;
-        }
-        Some(GameOverBtn::Penthouse) => {
-            *env = Environment::Penthouse;
-            reset_game(&mut poker);
-            *mode = GameMode::Playing;
-            needs.0 = true;
-        }
-        None => {}
+    if let Some(b) = clicked {
+        *env = match b {
+            GameOverBtn::Penthouse => Environment::Penthouse,
+            GameOverBtn::NewGame => Environment::Bar,
+        };
+        reset_game(&mut poker);
+        clock.active = 0.0;
+        clock.level = 0;
+        *mode = GameMode::Playing;
+        needs.0 = true;
     }
 }
 
@@ -4535,13 +4598,14 @@ fn hud_panel_toggle(
 /// Keep the "Pot $X" label sitting just under the pot chips in the middle.
 fn pot_label(
     poker: Res<Poker>,
+    ui: Res<AppUi>,
     camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut q: Query<(&mut Node, &mut Text, &mut Visibility), With<PotLabel>>,
 ) {
     let Ok((cam, cam_t)) = camera.single() else {
         return;
     };
-    let pot = poker.game.pot();
+    let pot = if ui.on_title { 0 } else { poker.game.pot() };
     // Just toward the camera from the pot pile, on the felt.
     let anchor = Vec3::new(0.0, poker.felt_top, -0.05);
     for (mut node, mut text, mut vis) in &mut q {
@@ -4566,11 +4630,19 @@ fn pot_label(
 fn action_ticker(
     time: Res<Time>,
     poker: Res<Poker>,
+    ui: Res<AppUi>,
     mut q: Query<(&mut Node, &mut Text, &mut TextColor), With<ActionTicker>>,
     mut last: Local<String>,
     mut shown_at: Local<f32>,
 ) {
     let now = time.elapsed_secs();
+    if ui.on_title {
+        *last = poker.log.clone(); // swallow startup log so it doesn't pop in
+        for (_, _, mut color) in &mut q {
+            *color = TextColor(Color::srgba(0.96, 0.95, 0.88, 0.0));
+        }
+        return;
+    }
     if poker.log != *last {
         *last = poker.log.clone();
         *shown_at = now;
@@ -4638,6 +4710,37 @@ fn name_plates(
         let pos = t.translation;
         let away = pos + (pos - Vec3::new(cam_pos.x, pos.y, cam_pos.z));
         t.look_at(away, Vec3::Y);
+    }
+}
+
+/// Advance the blind clock and bump the blinds every 5 minutes of active play.
+/// Stalls while the game is paused or the player has been idle for over 30s.
+fn blind_clock(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut cursor: MessageReader<bevy::window::CursorMoved>,
+    mut poker: ResMut<Poker>,
+    mut clock: ResMut<BlindClock>,
+) {
+    let now = time.elapsed_secs();
+    let input = keys.get_just_pressed().next().is_some()
+        || mouse.get_just_pressed().next().is_some()
+        || cursor.read().next().is_some();
+    if input {
+        clock.last_input = now;
+    }
+    let idle = now - clock.last_input;
+    if !poker.paused && idle < 30.0 {
+        clock.active += time.delta_secs();
+    }
+    let target = ((clock.active / BLIND_INTERVAL) as usize).min(BLIND_LEVELS.len() - 1);
+    if target > clock.level {
+        clock.level = target;
+        let (sb, bb) = BLIND_LEVELS[target];
+        poker.game.small_blind = sb;
+        poker.game.big_blind = bb;
+        poker.log = format!("Blinds up — {sb}/{bb}");
     }
 }
 
