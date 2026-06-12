@@ -165,6 +165,10 @@ struct TableProp;
 #[derive(Component)]
 struct HudText;
 
+/// The main 3D camera (so the spectate view can move it to the bar).
+#[derive(Component)]
+struct MainCamera;
+
 /// The live poker game plus the geometry it needs to lay itself out.
 #[derive(Resource)]
 struct Poker {
@@ -382,6 +386,36 @@ struct Music {
 #[derive(Component)]
 struct MusicTrack;
 
+/// Where the human stands in the game: still playing, busted out (now watching
+/// the AI from the bar), or having cleaned everyone out (offered the penthouse).
+#[derive(Resource, Clone, Copy, PartialEq)]
+enum GameMode {
+    Playing,
+    Busted,
+    Won,
+}
+
+/// Which room the game is played in.
+#[derive(Resource, Clone, Copy, PartialEq)]
+enum Environment {
+    Bar,
+    Penthouse,
+}
+
+/// The end-of-game overlay (lose / win) and its parts.
+#[derive(Component)]
+struct GameOverRoot;
+#[derive(Component)]
+struct GameOverTitle;
+#[derive(Component)]
+struct GameOverSub;
+/// A button in the game-over overlay.
+#[derive(Component, Clone, Copy, PartialEq)]
+enum GameOverBtn {
+    NewGame,
+    Penthouse,
+}
+
 /// Set true after the game state changes; the redraw system rebuilds the props.
 #[derive(Resource)]
 struct NeedsRedraw(bool);
@@ -417,6 +451,14 @@ fn main() {
         paused: env::var("SHOW_PAUSE").is_ok(),
         screenshot: screenshot_env && !demo_env,
     })
+    .insert_resource(if env::var("SHOW_WIN").is_ok() {
+        GameMode::Won
+    } else if env::var("SHOW_BUST").is_ok() {
+        GameMode::Busted
+    } else {
+        GameMode::Playing
+    })
+    .insert_resource(Environment::Bar)
     .insert_resource(SfxRng::new(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -457,6 +499,10 @@ fn main() {
             music_system,
             volume_controls,
             volume_toggle,
+            game_over_detect,
+            spectate_advance,
+            game_over_ui,
+            camera_rig,
         ),
     );
 
@@ -628,6 +674,7 @@ fn setup(
             ..default()
         },
         Transform::from_translation(cam_pos).looking_at(Vec3::new(0.0, 1.8, -2.0), Vec3::Y),
+        MainCamera,
         AmbientLight {
             color: Color::srgb(0.78, 0.82, 1.0),
             // Lower ambient darkens the room generally; the foreground is then
@@ -1927,6 +1974,95 @@ fn setup(
             });
         });
 
+    // --- end-of-game overlay (busted / won): a framed panel near the bottom so
+    // the table stays visible behind it (you watch the AI play on after busting)
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexEnd,
+                padding: UiRect::bottom(Val::Px(40.0)),
+                ..default()
+            },
+            Visibility::Hidden,
+            GlobalZIndex(55),
+            GameOverRoot,
+        ))
+        .with_children(|o| {
+            o.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(10.0),
+                    padding: UiRect::axes(Val::Px(34.0), Val::Px(20.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.06, 0.07, 0.09, 0.92)),
+                BorderColor::all(Color::srgb(0.85, 0.72, 0.35)),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: 40.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.85, 0.4)),
+                    GameOverTitle,
+                ));
+                panel.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: 20.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.9, 0.9, 0.85)),
+                    GameOverSub,
+                ));
+                panel
+                    .spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(18.0),
+                        margin: UiRect::top(Val::Px(8.0)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for (btn, label) in [
+                            (GameOverBtn::Penthouse, "Enter the Penthouse"),
+                            (GameOverBtn::NewGame, "New Game?"),
+                        ] {
+                            row.spawn((
+                                Button,
+                                Node {
+                                    padding: UiRect::axes(Val::Px(22.0), Val::Px(12.0)),
+                                    border: UiRect::all(Val::Px(2.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgb(0.2, 0.42, 0.26)),
+                                BorderColor::all(Color::srgb(0.85, 0.72, 0.35)),
+                                btn,
+                            ))
+                            .with_children(|b| {
+                                b.spawn((
+                                    Text::new(label),
+                                    TextFont {
+                                        font_size: 22.0,
+                                        ..default()
+                                    },
+                                    TextColor(Color::WHITE),
+                                ));
+                            });
+                        }
+                    });
+            });
+        });
+
     // --- ashtray with two cigarettes, off to the back-right of the felt ---
     let ash_x = 3.0;
     let ash_z = -1.5;
@@ -2866,13 +3002,16 @@ fn slider_system(
 /// the player clicks it (or presses Space/Enter), then deal the next hand.
 fn next_round(
     mut poker: ResMut<Poker>,
+    mode: Res<GameMode>,
     mut needs: ResMut<NeedsRedraw>,
     keys: Res<ButtonInput<KeyCode>>,
     mut bar: Query<&mut Visibility, With<NextRoundBar>>,
     mut btn: Query<(&Interaction, &mut BackgroundColor), With<NextButton>>,
 ) {
-    // Only once the showdown is settled (cards raised, nothing animating).
-    let show = poker.game.street == Street::HandOver
+    // Only once the showdown is settled (cards raised, nothing animating), and
+    // only while you're still in the game (spectating auto-advances instead).
+    let show = *mode == GameMode::Playing
+        && poker.game.street == Street::HandOver
         && !poker.dealing
         && !poker.comm_anim
         && poker.showdown_raise > 0.9;
@@ -3803,8 +3942,10 @@ fn money_labels(
 
 /// Fold the title/pause/screenshot overlays into the master freeze flag the
 /// game-driving systems already respect.
-fn sync_pause(ui: Res<AppUi>, mut poker: ResMut<Poker>) {
-    let frozen = ui.screenshot || ui.on_title || ui.paused;
+fn sync_pause(ui: Res<AppUi>, mode: Res<GameMode>, mut poker: ResMut<Poker>) {
+    // Title, pause menu, screenshots, and the win screen all freeze the table.
+    // (Busting out does NOT freeze it — the AI play on while you spectate.)
+    let frozen = ui.screenshot || ui.on_title || ui.paused || *mode == GameMode::Won;
     if poker.paused != frozen {
         poker.paused = frozen;
     }
@@ -4017,6 +4158,182 @@ fn volume_toggle(
                 VolKind::Music => music.on = !music.on,
             }
         }
+    }
+}
+
+/// Reset every stack to the buy-in and deal a fresh hand (a brand-new game).
+fn reset_game(poker: &mut Poker) {
+    for p in &mut poker.game.players {
+        p.stack = 1000;
+        p.folded = false;
+        p.all_in = false;
+        p.bet = 0;
+        p.committed = 0;
+    }
+    poker.game.start_hand();
+    poker.pending_deal = true;
+    poker.dealing = false;
+    poker.comm_anim = false;
+    poker.comm_shown = 0;
+    poker.showdown_raise = 0.0;
+    poker.celebrated = false;
+    poker.log = "New game".to_string();
+}
+
+/// Once a hand has settled, decide whether the human is out (busted) or has
+/// cleaned everyone else out (won).
+fn game_over_detect(mut mode: ResMut<GameMode>, poker: Res<Poker>) {
+    if *mode != GameMode::Playing {
+        return;
+    }
+    if poker.game.street != Street::HandOver
+        || poker.dealing
+        || poker.pending_deal
+        || poker.comm_anim
+        || poker.showdown_raise < 0.9
+    {
+        return;
+    }
+    let human_out = poker.game.players[0].stack == 0;
+    let others_out = poker.game.players.iter().skip(1).all(|p| p.stack == 0);
+    if others_out && !human_out {
+        *mode = GameMode::Won;
+    } else if human_out {
+        *mode = GameMode::Busted;
+    }
+}
+
+/// While the human spectates from the bar, deal the AI's hands automatically.
+fn spectate_advance(
+    mode: Res<GameMode>,
+    time: Res<Time>,
+    mut poker: ResMut<Poker>,
+    mut needs: ResMut<NeedsRedraw>,
+    mut timer: Local<f32>,
+) {
+    if *mode != GameMode::Busted {
+        *timer = 0.0;
+        return;
+    }
+    let settled = poker.game.street == Street::HandOver
+        && !poker.dealing
+        && !poker.comm_anim
+        && !poker.pending_deal
+        && poker.showdown_raise > 0.9;
+    if settled {
+        *timer += time.delta_secs();
+        if *timer > 2.5 {
+            *timer = 0.0;
+            poker.game.start_hand();
+            poker.pending_deal = true;
+            poker.showdown_raise = 0.0;
+            poker.log = "New hand".to_string();
+            needs.0 = true;
+        }
+    } else {
+        *timer = 0.0;
+    }
+}
+
+/// Smoothly move the camera to a spectator spot by the bar when the human has
+/// busted, and back to the playing view otherwise.
+fn camera_rig(
+    mode: Res<GameMode>,
+    time: Res<Time>,
+    mut cam: Query<&mut Transform, With<MainCamera>>,
+) {
+    let Ok(mut t) = cam.single_mut() else {
+        return;
+    };
+    let (target, look) = if *mode == GameMode::Busted {
+        // Pulled back to the side, as if nursing a drink at the bar.
+        (Vec3::new(-6.5, 3.1, -7.6), Vec3::new(0.3, 1.0, 0.5))
+    } else {
+        (Vec3::new(0.0, 4.7, 10.4), Vec3::new(0.0, 1.8, -2.0))
+    };
+    let k = (time.delta_secs() * 1.6).min(1.0);
+    let pos = t.translation.lerp(target, k);
+    *t = Transform::from_translation(pos).looking_at(look, Vec3::Y);
+}
+
+/// Drive the end-of-game overlay: headline, the New Game / Penthouse buttons,
+/// and their clicks (restart, or buy into the penthouse).
+fn game_over_ui(
+    mut mode: ResMut<GameMode>,
+    mut env: ResMut<Environment>,
+    mut poker: ResMut<Poker>,
+    mut needs: ResMut<NeedsRedraw>,
+    mut root: Query<&mut Visibility, (With<GameOverRoot>, Without<GameOverBtn>)>,
+    mut title: Query<&mut Text, (With<GameOverTitle>, Without<GameOverSub>)>,
+    mut sub: Query<&mut Text, (With<GameOverSub>, Without<GameOverTitle>)>,
+    mut buttons: Query<
+        (
+            &GameOverBtn,
+            &Interaction,
+            &mut Visibility,
+            &mut BackgroundColor,
+        ),
+        (With<Button>, Without<GameOverRoot>),
+    >,
+) {
+    let m = *mode;
+    let show = m != GameMode::Playing;
+    for mut v in &mut root {
+        *v = if show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    for mut t in &mut title {
+        *t = Text::new(match m {
+            GameMode::Busted => "BUSTED OUT",
+            GameMode::Won => "YOU CLEANED THEM OUT!",
+            GameMode::Playing => "",
+        });
+    }
+    for mut t in &mut sub {
+        *t = Text::new(match m {
+            GameMode::Busted => "Nursing a drink at the bar while the game plays on...",
+            GameMode::Won => "Cash out and buy into the high-roller game uptown?",
+            GameMode::Playing => "",
+        });
+    }
+    let mut clicked: Option<GameOverBtn> = None;
+    for (btn, interaction, mut vis, mut bg) in &mut buttons {
+        // The penthouse offer only appears on a win.
+        let visible = show && (*btn == GameOverBtn::NewGame || m == GameMode::Won);
+        *vis = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if !visible {
+            continue;
+        }
+        match *interaction {
+            Interaction::Pressed => {
+                *bg = BackgroundColor(Color::srgb(0.16, 0.55, 0.28));
+                clicked = Some(*btn);
+            }
+            Interaction::Hovered => *bg = BackgroundColor(Color::srgb(0.26, 0.5, 0.32)),
+            Interaction::None => *bg = BackgroundColor(Color::srgb(0.2, 0.42, 0.26)),
+        }
+    }
+    match clicked {
+        Some(GameOverBtn::NewGame) => {
+            *env = Environment::Bar;
+            reset_game(&mut poker);
+            *mode = GameMode::Playing;
+            needs.0 = true;
+        }
+        Some(GameOverBtn::Penthouse) => {
+            *env = Environment::Penthouse;
+            reset_game(&mut poker);
+            *mode = GameMode::Playing;
+            needs.0 = true;
+        }
+        None => {}
     }
 }
 
