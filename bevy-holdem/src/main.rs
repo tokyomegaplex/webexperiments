@@ -165,6 +165,19 @@ struct TableProp;
 #[derive(Component)]
 struct HudText;
 
+/// The HUD detail panel; hidden unless Tab is held.
+#[derive(Component)]
+struct HudPanel;
+
+/// World-anchored "Pot $X" label drawn just under the pot chips.
+#[derive(Component)]
+struct PotLabel;
+
+/// The transient last-action line at the top ("Hoodguy folds"): fades in,
+/// drifts upward, fades out.
+#[derive(Component)]
+struct ActionTicker;
+
 /// The main 3D camera (so the spectate view can move it to the bar).
 #[derive(Component)]
 struct MainCamera;
@@ -173,6 +186,23 @@ struct MainCamera;
 /// wall, the glossy floor) so a system can show/hide them with the room.
 #[derive(Component)]
 struct EnvPenthouse;
+
+/// A name plate floating over a standee; re-oriented every frame to face the
+/// live camera (text side toward the camera so it never reads mirrored).
+#[derive(Component)]
+struct NamePlate;
+
+/// One piece of the chair behind a standee. The whole chair swivels around the
+/// standee to stay directly behind it *as seen from the live camera*, so the
+/// flat billboard never clips through it from any viewpoint.
+#[derive(Component)]
+struct ChairPart {
+    /// The standee's floor anchor (x, floor_y, z).
+    anchor: Vec3,
+    /// 0 = backrest, ±1 = the two posts.
+    post: f32,
+    is_post: bool,
+}
 
 /// The live poker game plus the geometry it needs to lay itself out.
 #[derive(Resource)]
@@ -512,7 +542,12 @@ fn main() {
             spectate_advance,
             game_over_ui,
             camera_rig,
+            chair_rig,
+            name_plates,
             environment_visibility,
+            hud_panel_toggle,
+            pot_label,
+            action_ticker,
         ),
     );
 
@@ -1370,19 +1405,25 @@ fn setup(
         let x = angle.cos() * prx;
         let z = angle.sin() * prz;
 
-        // A chair behind each player: a leather backrest on two posts. It's
-        // placed directly behind the standee *as seen from the camera* and
-        // turned to face the camera, so the flat billboard never clips through
-        // it and the chair's edges peek out at the sides.
+        // A chair behind each player: a leather backrest on two posts. The
+        // chair_rig system swivels it each frame to stay directly behind the
+        // standee *as seen from the live camera*, so the flat billboard never
+        // clips through it from any viewpoint (front view or bar spectate).
         let to_cam = Vec2::new(cam_pos.x - x, cam_pos.z - z).normalize();
         let cyaw = to_cam.x.atan2(to_cam.y);
         let crot = Quat::from_rotation_y(cyaw);
         let cright = crot * Vec3::X;
         let cback = Vec3::new(x - to_cam.x * 0.55, floor_y + 2.0, z - to_cam.y * 0.55);
+        let anchor = Vec3::new(x, floor_y, z);
         commands.spawn((
             Mesh3d(chair_back_mesh.clone()),
             MeshMaterial3d(chair_leather.clone()),
             Transform::from_translation(cback).with_rotation(crot),
+            ChairPart {
+                anchor,
+                post: 0.0,
+                is_post: false,
+            },
         ));
         for s in [-1.0_f32, 1.0] {
             commands.spawn((
@@ -1392,6 +1433,11 @@ fn setup(
                     Vec3::new(cback.x, floor_y + 1.3, cback.z) + cright * (0.84 * s),
                 )
                 .with_rotation(crot),
+                ChairPart {
+                    anchor,
+                    post: s,
+                    is_post: true,
+                },
             ));
         }
 
@@ -1472,6 +1518,7 @@ fn setup(
             Transform::from_translation(plate_pos).looking_at(away, Vec3::Y),
             NotShadowCaster,
             SeatVisual(i + 1),
+            NamePlate,
         ));
     }
 
@@ -1664,7 +1711,9 @@ fn setup(
             });
         });
 
-    // --- HUD overlay (street / pot / players / last action) in a tidy panel ---
+    // --- HUD detail panel (street / players / stacks). Hidden by default; hold
+    // Tab to peek at it. The always-on info lives elsewhere: the pot amount
+    // under the pot, and the last action as a fading ticker up top. ---
     commands
         .spawn((
             Node {
@@ -1677,6 +1726,8 @@ fn setup(
             },
             BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.72)),
             BorderColor::all(Color::srgba(0.85, 0.72, 0.35, 0.55)),
+            Visibility::Hidden,
+            HudPanel,
         ))
         .with_children(|panel| {
             panel.spawn((
@@ -1689,6 +1740,42 @@ fn setup(
                 HudText,
             ));
         });
+
+    // Pot amount, anchored in world space just under the pot chips.
+    commands.spawn((
+        Text::new(""),
+        TextFont {
+            font_size: 21.0,
+            ..default()
+        },
+        TextColor(Color::srgb(1.0, 0.93, 0.6)),
+        TextLayout::new_with_justify(Justify::Center),
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Px(MONEY_LABEL_W),
+            ..default()
+        },
+        PotLabel,
+    ));
+
+    // Last-action ticker: fades in at the top, drifts, fades out.
+    commands.spawn((
+        Text::new(""),
+        TextFont {
+            font_size: 26.0,
+            ..default()
+        },
+        TextColor(Color::srgba(0.96, 0.95, 0.88, 0.0)),
+        TextLayout::new_with_justify(Justify::Center),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(64.0),
+            left: Val::Px(0.0),
+            right: Val::Px(0.0),
+            ..default()
+        },
+        ActionTicker,
+    ));
 
     // Your two hole cards, drawn flat in the bottom-left corner (2D overlay).
     for k in 0..2 {
@@ -4339,8 +4426,8 @@ fn camera_rig(
         return;
     };
     let (target, look) = if *mode == GameMode::Busted {
-        // Pulled back to the side, as if nursing a drink at the bar.
-        (Vec3::new(-6.5, 3.1, -7.6), Vec3::new(0.3, 1.0, 0.5))
+        // Well back by the bar, taking in the whole table from afar.
+        (Vec3::new(-10.5, 4.6, -9.0), Vec3::new(1.2, 0.9, 1.6))
     } else {
         (Vec3::new(0.0, 4.7, 10.4), Vec3::new(0.0, 1.8, -2.0))
     };
@@ -4427,6 +4514,130 @@ fn game_over_ui(
             needs.0 = true;
         }
         None => {}
+    }
+}
+
+/// Hold Tab to peek at the HUD detail panel.
+fn hud_panel_toggle(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut q: Query<&mut Visibility, With<HudPanel>>,
+) {
+    let show = keys.pressed(KeyCode::Tab);
+    for mut v in &mut q {
+        *v = if show {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// Keep the "Pot $X" label sitting just under the pot chips in the middle.
+fn pot_label(
+    poker: Res<Poker>,
+    camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut q: Query<(&mut Node, &mut Text, &mut Visibility), With<PotLabel>>,
+) {
+    let Ok((cam, cam_t)) = camera.single() else {
+        return;
+    };
+    let pot = poker.game.pot();
+    // Just toward the camera from the pot pile, on the felt.
+    let anchor = Vec3::new(0.0, poker.felt_top, -0.05);
+    for (mut node, mut text, mut vis) in &mut q {
+        if pot == 0 {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        match cam.world_to_viewport(cam_t, anchor) {
+            Ok(p) => {
+                node.left = Val::Px(p.x - MONEY_LABEL_W / 2.0);
+                node.top = Val::Px(p.y);
+                *text = Text::new(format!("Pot ${pot}"));
+                *vis = Visibility::Visible;
+            }
+            Err(_) => *vis = Visibility::Hidden,
+        }
+    }
+}
+
+/// Show the last action ("Hoodguy folds") as a transient line at the top of the
+/// screen: fade in, drift upward, fade out.
+fn action_ticker(
+    time: Res<Time>,
+    poker: Res<Poker>,
+    mut q: Query<(&mut Node, &mut Text, &mut TextColor), With<ActionTicker>>,
+    mut last: Local<String>,
+    mut shown_at: Local<f32>,
+) {
+    let now = time.elapsed_secs();
+    if poker.log != *last {
+        *last = poker.log.clone();
+        *shown_at = now;
+        for (_, mut text, _) in &mut q {
+            *text = Text::new(poker.log.clone());
+        }
+    }
+    let age = now - *shown_at;
+    // Fade in over 0.25s, hold, fade out 2.0..3.0s, drifting up the whole time.
+    let alpha = if age < 0.25 {
+        age / 0.25
+    } else if age < 2.0 {
+        1.0
+    } else if age < 3.0 {
+        1.0 - (age - 2.0)
+    } else {
+        0.0
+    };
+    for (mut node, _, mut color) in &mut q {
+        node.top = Val::Px(74.0 - (age.min(3.0)) * 6.0);
+        *color = TextColor(Color::srgba(0.96, 0.95, 0.88, alpha));
+    }
+}
+
+/// Swivel each chair around its standee so it stays directly behind the
+/// billboard as seen from the live camera — the standee then never clips it.
+fn chair_rig(
+    camera: Query<&Transform, (With<MainCamera>, Without<ChairPart>)>,
+    mut q: Query<(&ChairPart, &mut Transform)>,
+) {
+    let Ok(cam) = camera.single() else {
+        return;
+    };
+    let cam_pos = cam.translation;
+    for (part, mut t) in &mut q {
+        let to_cam = Vec2::new(cam_pos.x - part.anchor.x, cam_pos.z - part.anchor.z)
+            .normalize_or_zero();
+        let cyaw = to_cam.x.atan2(to_cam.y);
+        let crot = Quat::from_rotation_y(cyaw);
+        let back = Vec3::new(
+            part.anchor.x - to_cam.x * 0.55,
+            part.anchor.y + 2.0,
+            part.anchor.z - to_cam.y * 0.55,
+        );
+        let pos = if part.is_post {
+            let cright = crot * Vec3::X;
+            Vec3::new(back.x, part.anchor.y + 1.3, back.z) + cright * (0.84 * part.post)
+        } else {
+            back
+        };
+        *t = Transform::from_translation(pos).with_rotation(crot);
+    }
+}
+
+/// Keep the name plates facing the live camera (text side toward it).
+fn name_plates(
+    camera: Query<&Transform, (With<MainCamera>, Without<NamePlate>)>,
+    mut q: Query<&mut Transform, With<NamePlate>>,
+) {
+    let Ok(cam) = camera.single() else {
+        return;
+    };
+    let cam_pos = cam.translation;
+    for mut t in &mut q {
+        let pos = t.translation;
+        let away = pos + (pos - Vec3::new(cam_pos.x, pos.y, cam_pos.z));
+        t.look_at(away, Vec3::Y);
     }
 }
 
