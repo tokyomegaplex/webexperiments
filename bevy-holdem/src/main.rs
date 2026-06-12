@@ -169,6 +169,11 @@ struct HudText;
 #[derive(Component)]
 struct MainCamera;
 
+/// Tags entities that only exist in the penthouse environment (the city window
+/// wall, the glossy floor) so a system can show/hide them with the room.
+#[derive(Component)]
+struct EnvPenthouse;
+
 /// The live poker game plus the geometry it needs to lay itself out.
 #[derive(Resource)]
 struct Poker {
@@ -458,7 +463,11 @@ fn main() {
     } else {
         GameMode::Playing
     })
-    .insert_resource(Environment::Bar)
+    .insert_resource(if env::var("SHOW_PENTHOUSE").is_ok() {
+        Environment::Penthouse
+    } else {
+        Environment::Bar
+    })
     .insert_resource(SfxRng::new(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -503,6 +512,7 @@ fn main() {
             spectate_advance,
             game_over_ui,
             camera_rig,
+            environment_visibility,
         ),
     );
 
@@ -1865,6 +1875,89 @@ fn setup(
                 ));
             });
         });
+
+    // --- penthouse environment (hidden until you "Enter the Penthouse"): a
+    // floor-to-ceiling city window that sits in front of the bar (occluding it),
+    // a dark glossy floor over the carpet, and a cool city glow. ---
+    {
+        let win_z = -9.5_f32;
+        let win_w = 30.0_f32;
+        let win_h = 10.0_f32; // floor (-0.5) to ceiling (9.5)
+        let win_cy = floor_y + win_h / 2.0;
+        // The city skyline itself: a big emissive plane so the lit windows glow.
+        commands.spawn((
+            Mesh3d(meshes.add(Rectangle::new(win_w, win_h))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: Some(asset_server.load("city.png")),
+                emissive: LinearRgba::rgb(0.6, 0.6, 0.8),
+                emissive_texture: Some(asset_server.load("city.png")),
+                unlit: true,
+                ..default()
+            })),
+            Transform::from_xyz(0.0, win_cy, win_z - 0.3),
+            Visibility::Hidden,
+            NotShadowCaster,
+            EnvPenthouse,
+        ));
+        // Dark window frame / mullions in front of the glass (gridded steel).
+        let mullion = materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(18, 20, 26),
+            metallic: 0.7,
+            perceptual_roughness: 0.4,
+            ..default()
+        });
+        // verticals
+        for i in 0..7 {
+            let mx = -win_w / 2.0 + win_w * i as f32 / 6.0;
+            commands.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.16, win_h, 0.16))),
+                MeshMaterial3d(mullion.clone()),
+                Transform::from_xyz(mx, win_cy, win_z),
+                Visibility::Hidden,
+                EnvPenthouse,
+            ));
+        }
+        // horizontals (incl. floor & ceiling rails)
+        for j in 0..4 {
+            let my = floor_y + win_h * j as f32 / 3.0;
+            commands.spawn((
+                Mesh3d(meshes.add(Cuboid::new(win_w, 0.18, 0.16))),
+                MeshMaterial3d(mullion.clone()),
+                Transform::from_xyz(0.0, my, win_z),
+                Visibility::Hidden,
+                EnvPenthouse,
+            ));
+        }
+        // Glossy dark penthouse floor laid over the carpet.
+        commands.spawn((
+            Mesh3d(meshes.add(Rectangle::new(60.0, 60.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb_u8(20, 18, 24),
+                perceptual_roughness: 0.12,
+                metallic: 0.3,
+                reflectance: 0.6,
+                ..default()
+            })),
+            Transform::from_xyz(0.0, floor_y + 0.03, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            Visibility::Hidden,
+            EnvPenthouse,
+        ));
+        // Cool city glow spilling in from the window.
+        commands.spawn((
+            PointLight {
+                color: Color::srgb(0.6, 0.7, 1.0),
+                intensity: 700_000.0,
+                range: 28.0,
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, floor_y + 4.0, win_z + 2.5),
+            Visibility::Hidden,
+            EnvPenthouse,
+        ));
+    }
 
     // --- background music: discover the songs in assets/music ---
     {
@@ -4334,6 +4427,20 @@ fn game_over_ui(
             needs.0 = true;
         }
         None => {}
+    }
+}
+
+/// Show the penthouse-only props when that room is active, hide them otherwise.
+fn environment_visibility(env: Res<Environment>, mut q: Query<&mut Visibility, With<EnvPenthouse>>) {
+    let want = if *env == Environment::Penthouse {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut q {
+        if *v != want {
+            *v = want;
+        }
     }
 }
 
