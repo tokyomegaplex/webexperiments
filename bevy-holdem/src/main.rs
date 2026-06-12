@@ -42,6 +42,27 @@ struct Standee {
     walk: f32,
     /// Seconds left of a little squash-and-stretch hop (set when they speak).
     bounce: f32,
+    /// Seconds left of the subtle squash-stretch pulse played on frame switches.
+    squash: f32,
+}
+
+/// Per-character animation frames, discovered from `characters/<id>/` by
+/// filename: `*default*` (idle, randomly cycled), `*talk*` (while speaking),
+/// `*back*` (walking to the bar after busting), `*sit*` (seated at the bar).
+/// Falls back to the single base sprite when a folder/frame is missing.
+#[derive(Component)]
+struct CharAnim {
+    default_mats: Vec<Handle<StandardMaterial>>,
+    talk_mats: Vec<Handle<StandardMaterial>>,
+    back_mat: Option<Handle<StandardMaterial>>,
+    sit_mat: Option<Handle<StandardMaterial>>,
+    /// Index into default_mats currently showing.
+    cur: usize,
+    /// Wiggle step at which to switch to a new random default frame.
+    next_switch: f32,
+    /// While `now < talk_until`, show the chosen talk frame.
+    talk_until: f32,
+    talk_idx: usize,
 }
 
 /// Tags a per-seat scene visual (name plate) so it can be hidden when the
@@ -542,6 +563,7 @@ fn main() {
         Update,
         (
             standee_system,
+            char_anim,
             smoke_system,
             auto_play,
             deal_system,
@@ -1474,26 +1496,41 @@ fn setup(
             ));
         }
 
-        let tex = asset_server.load(c.file);
-        let material = materials.add(StandardMaterial {
-            // White base so the PNG shows its true colors (no tint).
-            base_color: Color::WHITE,
-            base_color_texture: Some(tex.clone()),
-            // Self-light the art so the flat cartoon colours read true and vivid
-            // (not washed out) even as the room is dim. Transparent pixels are
-            // black in the source PNGs, so this adds no halo.
-            emissive: LinearRgba::rgb(0.7, 0.7, 0.7),
-            emissive_texture: Some(tex),
-            // Fully matte, zero specular: kills the grey sheen that was lifting
-            // dark areas (e.g. the inside of Hoodguy's hood) to grey.
-            perceptual_roughness: 1.0,
-            reflectance: 0.0,
-            metallic: 0.0,
-            alpha_mode: AlphaMode::Blend,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        });
+        // Build one standee material per sprite. All frames share the same
+        // params (white base, self-lit, matte, alpha-blended).
+        let mut mk = |path: &str| {
+            let tex: Handle<Image> = asset_server.load(path.to_string());
+            materials.add(StandardMaterial {
+                // White base so the PNG shows its true colors (no tint).
+                base_color: Color::WHITE,
+                base_color_texture: Some(tex.clone()),
+                // Self-light the art so the flat cartoon colours read true and
+                // vivid (not washed out) even as the room is dim.
+                emissive: LinearRgba::rgb(0.7, 0.7, 0.7),
+                emissive_texture: Some(tex),
+                // Fully matte, zero specular: kills the grey sheen that was
+                // lifting dark areas (e.g. inside Hoodguy's hood) to grey.
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                metallic: 0.0,
+                alpha_mode: AlphaMode::Blend,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            })
+        };
+
+        // Animation frames from characters/<id>/ (default/talk/back/sit); the
+        // single base sprite stands in for anything missing.
+        let (def_f, talk_f, back_f, sit_f) = char_frame_files(c.id);
+        let mut default_mats: Vec<_> = def_f.iter().map(|p| mk(p)).collect();
+        if default_mats.is_empty() {
+            default_mats.push(mk(c.file));
+        }
+        let talk_mats: Vec<_> = talk_f.iter().map(|p| mk(p)).collect();
+        let back_mat = back_f.as_deref().map(&mut mk);
+        let sit_mat = sit_f.as_deref().map(&mut mk);
+        let material = default_mats[0].clone();
 
         // Feet on the floor; the raised table edge crosses the lower body so
         // they read as seated rather than floating.
@@ -1501,6 +1538,16 @@ fn setup(
         commands.spawn((
             Mesh3d(quad.clone()),
             MeshMaterial3d(material),
+            CharAnim {
+                default_mats,
+                talk_mats,
+                back_mat,
+                sit_mat,
+                cur: 0,
+                next_switch: 0.0,
+                talk_until: 0.0,
+                talk_idx: 0,
+            },
             Transform::from_translation(base),
             // Flat quads make ugly shadows; use a blob shadow instead.
             NotShadowCaster,
@@ -1518,6 +1565,7 @@ fn setup(
                 seat: i + 1,
                 walk: 0.0,
                 bounce: 0.0,
+                squash: 0.0,
             },
             Name::new(c.name),
         ));
@@ -2488,6 +2536,15 @@ fn standee_system(
             sx = 1.0 - 0.12 * hop + 0.08 * (-stretch).max(0.0);
         }
 
+        // Subtle squash-stretch pulse on sprite-frame switches (set by char_anim).
+        const FRAME_SQUASH: f32 = 0.22;
+        if s.squash > 0.0 {
+            s.squash = (s.squash - dt).max(0.0);
+            let p = (((FRAME_SQUASH - s.squash) / FRAME_SQUASH) * std::f32::consts::PI).sin();
+            sx *= 1.0 + p * 0.06;
+            sy *= 1.0 - p * 0.07;
+        }
+
         t.translation = pos;
 
         // Face the camera, yaw only (target at the standee's own height).
@@ -2498,6 +2555,50 @@ fn standee_system(
         t.rotate_local_y(s.yaw_offset);
         t.rotate_local_z(nlean * 0.005);
         t.scale = s.base_scale * (1.0 + nsc * 0.004) * Vec3::new(sx, sy, 1.0);
+    }
+}
+
+/// Drive each character's sprite frames: random default-frame switches on the
+/// same stepped cadence as the wiggle, a random talk frame while their voice
+/// plays, the "back" sprite while walking to the bar after busting, and "sit"
+/// once they're on the stool — with a subtle squash-stretch on every switch.
+fn char_anim(
+    time: Res<Time>,
+    mut rng: ResMut<SfxRng>,
+    mut q: Query<(
+        &mut Standee,
+        &mut CharAnim,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
+) {
+    let now = time.elapsed_secs();
+    let step = (now * 4.0).floor();
+    for (mut s, mut a, mut mat) in &mut q {
+        let fallback = a.default_mats[a.cur % a.default_mats.len()].clone();
+        let want: Handle<StandardMaterial> = if s.walk >= 0.995 {
+            a.sit_mat.clone().unwrap_or(fallback)
+        } else if s.walk > 0.0 {
+            a.back_mat.clone().unwrap_or(fallback)
+        } else if now < a.talk_until && !a.talk_mats.is_empty() {
+            a.talk_mats[a.talk_idx % a.talk_mats.len()].clone()
+        } else {
+            // Idle: hop to a different random default frame at random intervals,
+            // landing on the same time steps the wiggle is quantized to.
+            if a.default_mats.len() > 1 && step >= a.next_switch {
+                let mut idx = rng.next_u32() as usize % a.default_mats.len();
+                if idx == a.cur {
+                    idx = (idx + 1) % a.default_mats.len();
+                }
+                a.cur = idx;
+                // Next switch in ~0.75–3.5s (the wiggle steps 4x per second).
+                a.next_switch = step + 3.0 + rng.unit() * 11.0;
+            }
+            a.default_mats[a.cur].clone()
+        };
+        if mat.0 != want {
+            mat.0 = want;
+            s.squash = 0.22; // the little pop on every frame change
+        }
     }
 }
 
@@ -2748,6 +2849,53 @@ fn spawn_volume_row(
         });
 }
 
+/// Discover a character's animation frames from `characters/<id>/` (any case):
+/// returns (default frames, talk frames, back, sit) as asset-relative paths,
+/// keyed by filename keywords. All empty/None when the folder doesn't exist.
+fn char_frame_files(id: &str) -> (Vec<String>, Vec<String>, Option<String>, Option<String>) {
+    let mut defaults = Vec::new();
+    let mut talks = Vec::new();
+    let mut back = None;
+    let mut sit = None;
+    let roots = [env::var("BEVY_ASSET_ROOT").ok(), Some("assets".to_string())];
+    for root in roots.into_iter().flatten() {
+        let base = std::path::Path::new(&root).join("characters");
+        let Ok(rd) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let dir = entry.path();
+            let dname = entry.file_name().to_string_lossy().to_string();
+            if !dir.is_dir() || dname.to_lowercase() != id.to_lowercase() {
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for f in files.flatten() {
+                let fname = f.file_name().to_string_lossy().to_string();
+                let lower = fname.to_lowercase();
+                if !lower.ends_with(".png") {
+                    continue;
+                }
+                let rel = format!("characters/{dname}/{fname}");
+                if lower.contains("default") {
+                    defaults.push(rel);
+                } else if lower.contains("talk") {
+                    talks.push(rel);
+                } else if lower.contains("back") {
+                    back = Some(rel);
+                } else if lower.contains("sit") {
+                    sit = Some(rel);
+                }
+            }
+        }
+    }
+    defaults.sort();
+    talks.sort();
+    (defaults, talks, back, sit)
+}
+
 /// Find Bubble's directional sprites: looks for a `characters/bubble/` folder
 /// (any case) containing PNGs named with front/back/left/right, and falls back
 /// to the single `characters/Bubble.png` for any facing that's missing.
@@ -2909,11 +3057,12 @@ fn auto_play(
 /// Play a character's voice when it becomes their turn (random clip, jittered)
 /// and make that character do a little squash-and-stretch hop.
 fn turn_sounds(
+    time: Res<Time>,
     mut poker: ResMut<Poker>,
     mut commands: Commands,
     sfx: Res<Sfx>,
     mut rng: ResMut<SfxRng>,
-    mut standees: Query<&mut Standee>,
+    mut standees: Query<(&mut Standee, &mut CharAnim)>,
 ) {
     if poker.paused || poker.dealing || poker.pending_deal || poker.comm_anim {
         return;
@@ -2927,9 +3076,13 @@ fn turn_sounds(
         return;
     }
     poker.last_actor = seat;
-    for mut st in &mut standees {
+    let talk_pick = rng.next_u32() as usize;
+    for (mut st, mut anim) in &mut standees {
         if st.seat == seat {
             st.bounce = 0.42;
+            // Show a random talk frame for about as long as the voice line.
+            anim.talk_until = time.elapsed_secs() + 1.0;
+            anim.talk_idx = talk_pick;
         }
     }
     if let Some(list) = sfx.chars.get(seat) {
@@ -4090,11 +4243,12 @@ fn chip_fly(
 }
 
 fn win_celebrate(
+    time: Res<Time>,
     mut poker: ResMut<Poker>,
     mut commands: Commands,
     sfx: Res<Sfx>,
     mut rng: ResMut<SfxRng>,
-    mut standees: Query<&mut Standee>,
+    mut standees: Query<(&mut Standee, &mut CharAnim)>,
 ) {
     if poker.paused {
         return;
@@ -4110,9 +4264,12 @@ fn win_celebrate(
     poker.celebrated = true;
     let winners: Vec<usize> = poker.game.last_payouts.iter().map(|p| p.seat).collect();
     for seat in winners {
-        for mut st in &mut standees {
+        let talk_pick = rng.next_u32() as usize;
+        for (mut st, mut anim) in &mut standees {
             if st.seat == seat {
                 st.bounce = 0.6;
+                anim.talk_until = time.elapsed_secs() + 1.2;
+                anim.talk_idx = talk_pick;
             }
         }
         if let Some(list) = sfx.chars.get(seat) {
@@ -4377,8 +4534,11 @@ fn volume_controls(
             VolKind::Sfx => sfx.sfx_on,
             VolKind::Music => music.on,
         };
+        // Inherited (not Visible): Visible would force the check-marks to render
+        // even while the pause menu itself is hidden — green X's floating over
+        // the table.
         *vis = if on {
-            Visibility::Visible
+            Visibility::Inherited
         } else {
             Visibility::Hidden
         };
@@ -4859,5 +5019,37 @@ mod bubble_tests {
                 s[i]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod char_frame_tests {
+    use super::*;
+
+    /// Frame discovery keys files by name (default/talk/back/sit) from a
+    /// character's folder, and returns nothing for characters without one.
+    #[test]
+    fn char_frames_discovered_by_keyword() {
+        let dir = std::path::Path::new("assets/characters/__testchar");
+        std::fs::create_dir_all(dir).unwrap();
+        for f in [
+            "Test_default1.png",
+            "Test_default2.png",
+            "Test_talk1.png",
+            "Test_back.png",
+            "Test_sit.png",
+            "notes.txt", // ignored: not a png
+        ] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        let (d, t, b, s) = char_frame_files("__testchar");
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(d.len(), 2, "two default frames: {d:?}");
+        assert_eq!(t.len(), 1, "one talk frame: {t:?}");
+        assert!(b.unwrap().ends_with("Test_back.png"));
+        assert!(s.unwrap().ends_with("Test_sit.png"));
+
+        let (d, t, b, s) = char_frame_files("no_such_character");
+        assert!(d.is_empty() && t.is_empty() && b.is_none() && s.is_none());
     }
 }
