@@ -2596,8 +2596,8 @@ fn char_anim(
                     idx = (idx + 1) % a.default_mats.len();
                 }
                 a.cur = idx;
-                // Next switch in ~0.75–3.5s (the wiggle steps 4x per second).
-                a.next_switch = step + 3.0 + rng.unit() * 11.0;
+                // Next switch in ~3–10s (the wiggle steps 4x per second).
+                a.next_switch = step + 12.0 + rng.unit() * 28.0;
             }
             a.default_mats[a.cur].clone()
         };
