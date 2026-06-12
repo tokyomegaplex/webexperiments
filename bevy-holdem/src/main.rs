@@ -368,7 +368,10 @@ struct VolToggleMark(VolKind);
 #[derive(Resource)]
 struct Music {
     songs: Vec<Handle<AudioSource>>,
-    current: usize,
+    /// A shuffled play order; we step through it and reshuffle once exhausted so
+    /// every song plays once per cycle, in a fresh random order each cycle.
+    order: Vec<usize>,
+    pos: usize,
     vol: f32,
     on: bool,
     last_street: Street,
@@ -398,7 +401,7 @@ fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Cartoon Hold'em (Bevy)".into(),
+            title: "Pokermon Hold 'em".into(),
             resolution: [1100u32, 760].into(),
             ..default()
         }),
@@ -1563,37 +1566,39 @@ fn setup(
             MoneyLabel(s),
         ));
     }
-    // Winner banner: a gold-framed panel centred on screen at showdown.
+    // Winner banner: a gold-framed panel in the empty band at the top of the
+    // screen, above the rest of the UI.
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Percent(30.0),
+                top: Val::Px(14.0),
                 left: Val::Px(0.0),
                 right: Val::Px(0.0),
                 justify_content: JustifyContent::Center,
                 ..default()
             },
             Visibility::Hidden,
+            GlobalZIndex(40),
             WinBannerRoot,
         ))
         .with_children(|root| {
             root.spawn((
                 Node {
-                    padding: UiRect::axes(Val::Px(30.0), Val::Px(16.0)),
+                    padding: UiRect::axes(Val::Px(26.0), Val::Px(10.0)),
                     border: UiRect::all(Val::Px(3.0)),
                     align_items: AlignItems::Center,
                     justify_content: JustifyContent::Center,
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.09, 0.07, 0.03, 0.86)),
+                BackgroundColor(Color::srgba(0.09, 0.07, 0.03, 0.9)),
                 BorderColor::all(Color::srgb(0.88, 0.72, 0.32)),
             ))
             .with_children(|panel| {
                 panel.spawn((
                     Text::new(""),
                     TextFont {
-                        font_size: 46.0,
+                        font_size: 30.0,
                         ..default()
                     },
                     TextColor(Color::srgb(1.0, 0.92, 0.5)),
@@ -1820,7 +1825,8 @@ fn setup(
             scan_music().iter().map(|p| asset_server.load(p.clone())).collect();
         commands.insert_resource(Music {
             songs,
-            current: 0,
+            order: Vec::new(),
+            pos: 0,
             vol: 0.25,
             on: true,
             last_street: Street::HandOver,
@@ -1851,9 +1857,9 @@ fn setup(
         ))
         .with_children(|t| {
             t.spawn((
-                Text::new("CARTOON HOLD'EM"),
+                Text::new("POKERMON HOLD 'EM"),
                 TextFont {
-                    font_size: 66.0,
+                    font_size: 64.0,
                     ..default()
                 },
                 TextColor(Color::srgb(1.0, 0.85, 0.4)),
@@ -3420,7 +3426,7 @@ fn hud(
                 let verb = if p.is_human { "win" } else { "wins" };
                 let hand = if showdown {
                     g.hand_value(pay.seat)
-                        .map(|v| format!(" with a {}", v.category.name()))
+                        .map(|v| format!(" with {}", v.describe()))
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -3851,6 +3857,28 @@ fn ui_overlays(
     }
 }
 
+/// Build a fresh random play order over all songs (Fisher–Yates), resetting the
+/// position to the start. Avoids opening the new cycle with the song that just
+/// finished the previous one, so there's never a back-to-back repeat.
+fn reshuffle_songs(music: &mut Music, rng: &mut SfxRng) {
+    let n = music.songs.len();
+    let prev = music.order.get(music.pos).copied();
+    let mut order: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        let j = rng.next_u32() as usize % (i + 1);
+        order.swap(i, j);
+    }
+    if n > 1 {
+        if let Some(p) = prev {
+            if order[0] == p {
+                order.swap(0, n - 1);
+            }
+        }
+    }
+    music.order = order;
+    music.pos = 0;
+}
+
 /// Background music: a fresh looping song at the start of each round, faded out
 /// when the round ends, with live volume/mute from the options menu.
 fn music_system(
@@ -3858,6 +3886,7 @@ fn music_system(
     ui: Res<AppUi>,
     poker: Res<Poker>,
     mut music: ResMut<Music>,
+    mut rng: ResMut<SfxRng>,
     mut commands: Commands,
     all_tracks: Query<Entity, With<MusicTrack>>,
     mut sinks: Query<&mut AudioSink, With<MusicTrack>>,
@@ -3867,13 +3896,22 @@ fn music_system(
     }
     let street = poker.game.street;
 
-    // Round start (entering Preflop): switch to the next song and loop it.
+    // Round start (entering Preflop): advance the shuffled play order to the
+    // next song (reshuffling once we've played them all) and loop it.
     if street == Street::Preflop && music.last_street != Street::Preflop {
         for e in &all_tracks {
             commands.entity(e).despawn();
         }
-        let idx = music.current % music.songs.len();
-        music.current = (music.current + 1) % music.songs.len();
+        let n = music.songs.len();
+        if music.order.is_empty() {
+            reshuffle_songs(&mut music, &mut rng);
+        } else {
+            music.pos += 1;
+            if music.pos >= music.order.len() {
+                reshuffle_songs(&mut music, &mut rng);
+            }
+        }
+        let idx = music.order.get(music.pos).copied().unwrap_or(0) % n;
         music.fade = 1.0;
         music.fading = false;
         let vol = if music.on { music.vol } else { 0.0 };

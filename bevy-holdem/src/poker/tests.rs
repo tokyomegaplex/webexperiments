@@ -93,6 +93,25 @@ fn hand_category_ordering() {
 }
 
 #[test]
+fn hand_descriptions_name_the_ranks() {
+    assert_eq!(eval(&["Kh", "Kd", "9s", "5c", "2d"]).describe(), "a Pair of Kings");
+    assert_eq!(
+        eval(&["Kh", "Kd", "8s", "8c", "2d"]).describe(),
+        "Two Pair, Kings & Eights"
+    );
+    assert_eq!(eval(&["7h", "7d", "7s", "5c", "2d"]).describe(), "Three Sevens");
+    assert_eq!(
+        eval(&["Ah", "Ad", "As", "Tc", "Td"]).describe(),
+        "a Full House, Aces full of Tens"
+    );
+    assert_eq!(
+        eval(&["9s", "8d", "7h", "6c", "5s"]).describe(),
+        "a Nine-high Straight"
+    );
+    assert_eq!(eval(&["Qh", "Qd", "Qs", "Qc", "2d"]).describe(), "Four Queens");
+}
+
+#[test]
 fn wheel_straight_is_five_high() {
     let wheel = eval(&["Ah", "2d", "3c", "4s", "5h", "Kd", "Qd"]);
     assert_eq!(wheel.category, HandCategory::Straight);

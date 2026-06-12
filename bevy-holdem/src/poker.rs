@@ -240,6 +240,74 @@ impl Ord for HandValue {
     }
 }
 
+/// Singular rank name from a 2..=14 value ("King", "Ace", …).
+fn rank_word(v: u8) -> &'static str {
+    match v {
+        2 => "Two",
+        3 => "Three",
+        4 => "Four",
+        5 => "Five",
+        6 => "Six",
+        7 => "Seven",
+        8 => "Eight",
+        9 => "Nine",
+        10 => "Ten",
+        11 => "Jack",
+        12 => "Queen",
+        13 => "King",
+        14 => "Ace",
+        _ => "?",
+    }
+}
+
+/// Plural rank name from a 2..=14 value ("Kings", "Aces", …).
+fn rank_plural(v: u8) -> &'static str {
+    match v {
+        2 => "Twos",
+        3 => "Threes",
+        4 => "Fours",
+        5 => "Fives",
+        6 => "Sixes",
+        7 => "Sevens",
+        8 => "Eights",
+        9 => "Nines",
+        10 => "Tens",
+        11 => "Jacks",
+        12 => "Queens",
+        13 => "Kings",
+        14 => "Aces",
+        _ => "?",
+    }
+}
+
+impl HandValue {
+    /// A natural-language description that reads well after "with", e.g.
+    /// "a Pair of Kings", "Two Pair, Kings & Eights", "a Full House, Aces
+    /// full of Tens", "a King-high Straight".
+    pub fn describe(&self) -> String {
+        let t = &self.tiebreak;
+        let hi = t.first().copied().unwrap_or(0);
+        let lo = t.get(1).copied().unwrap_or(0);
+        match self.category {
+            HandCategory::HighCard => format!("{} high", rank_word(hi)),
+            HandCategory::Pair => format!("a Pair of {}", rank_plural(hi)),
+            HandCategory::TwoPair => {
+                format!("Two Pair, {} & {}", rank_plural(hi), rank_plural(lo))
+            }
+            HandCategory::Trips => format!("Three {}", rank_plural(hi)),
+            HandCategory::Straight => format!("a {}-high Straight", rank_word(hi)),
+            HandCategory::Flush => format!("a {}-high Flush", rank_word(hi)),
+            HandCategory::FullHouse => {
+                format!("a Full House, {} full of {}", rank_plural(hi), rank_plural(lo))
+            }
+            HandCategory::Quads => format!("Four {}", rank_plural(hi)),
+            HandCategory::StraightFlush => {
+                format!("a {}-high Straight Flush", rank_word(hi))
+            }
+        }
+    }
+}
+
 /// If the (unique) rank set contains a 5-card straight, return its high card.
 /// Handles the wheel (A-2-3-4-5, high card 5).
 fn straight_high(unique_desc: &[u8]) -> Option<u8> {
