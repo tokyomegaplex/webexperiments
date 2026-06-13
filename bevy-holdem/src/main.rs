@@ -1236,9 +1236,9 @@ fn setup(
     // --- Bubble the bartender: a billboard standee behind the counter, with
     // directional sprites so he can idle, turn to the bar, and stroll around ---
     {
-        // Raised so his body clears the counter top — his wide billboard used to
-        // sweep through the bar when it rotated to face the camera.
-        let base = Vec3::new(-7.5, floor_y + 3.5, bar_z + 0.5);
+        // Behind the bar in the gap between the back cabinet and the counter,
+        // at a natural standing height.
+        let base = Vec3::new(-7.5, floor_y + 2.4, bar_z - 0.1);
         let sprites = bubble_sprites();
         let mats: [Handle<StandardMaterial>; 4] = sprites.map(|path| {
             let tex = asset_server.load(path);
@@ -1549,11 +1549,14 @@ fn setup(
         let material = default_mats[0].clone();
 
         // Feet on the floor; the raised table edge crosses the lower body so
-        // they read as seated rather than floating. Some characters get a size
-        // bump (and their feet kept on the floor by raising the centre).
+        // they read as seated rather than floating. Bigger characters keep the
+        // SAME centre height (so they still sit at the table the way they did
+        // before) — the extra size just makes their head taller and lets the
+        // larger lower body sink below the table.
         let char_scale = if c.id == "mejdk" { 1.5 } else { 1.0 };
         let flip_x = if c.id == "jaack" { -1.0 } else { 1.0 };
-        let base = Vec3::new(x, floor_y + quad_h * char_scale / 2.0, z);
+        let base_y = floor_y + quad_h / 2.0;
+        let base = Vec3::new(x, base_y, z);
         commands.spawn((
             Mesh3d(quad.clone()),
             MeshMaterial3d(material),
@@ -1612,7 +1615,7 @@ fn setup(
             cull_mode: None,
             ..default()
         });
-        let plate_pos = Vec3::new(x, floor_y + quad_h * char_scale + 0.15, z);
+        let plate_pos = Vec3::new(x, base_y + quad_h * char_scale / 2.0 + 0.15, z);
         let away = plate_pos + (plate_pos - cam_pos); // so +Z faces the camera
         commands.spawn((
             Mesh3d(plate_quad.clone()),
