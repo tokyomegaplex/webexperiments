@@ -23,6 +23,34 @@ mkdir -p "$APP/Contents/MacOS"
 cp "target/release/$BIN" "$APP/Contents/MacOS/$BIN"
 cp -R assets "$APP/Contents/MacOS/assets"
 
+# --- shrink the bundled assets (the source files in ./assets are left alone) ---
+BUNDLE_ASSETS="$APP/Contents/MacOS/assets"
+
+# Character art is shipped at ~2k px but only drawn as small billboards. Cap the
+# bundled copies at 1024px wide (preserving aspect) — typically ~10x smaller.
+echo "==> Downscaling bundled character art to <=1024px wide ..."
+while IFS= read -r -d '' p; do
+    w="$(sips -g pixelWidth "$p" 2>/dev/null | awk '/pixelWidth/{print $2}')"
+    if [[ -n "$w" && "$w" -gt 1024 ]]; then
+        sips --resampleWidth 1024 "$p" >/dev/null 2>&1
+    fi
+done < <(find "$BUNDLE_ASSETS/characters" -iname '*.png' -print0)
+
+# Music is uncompressed WAV (~10x bigger than OGG). If ffmpeg is installed,
+# convert the bundled copies to OGG (Bevy plays both); otherwise leave WAV.
+if command -v ffmpeg >/dev/null 2>&1; then
+    echo "==> Converting bundled music to OGG (ffmpeg found) ..."
+    while IFS= read -r -d '' w; do
+        if ffmpeg -y -i "$w" -c:a libvorbis -q:a 4 "${w%.wav}.ogg" >/dev/null 2>&1; then
+            rm -f "$w"
+        fi
+    done < <(find "$BUNDLE_ASSETS/music" -iname '*.wav' -print0)
+else
+    echo "==> (ffmpeg not found — leaving music as WAV. 'brew install ffmpeg' to shrink it.)"
+fi
+
+du -sh "$BUNDLE_ASSETS" 2>/dev/null | awk '{print "    bundled assets now: "$1}'
+
 # App icon: convert a PNG -> AppIcon.icns (needs macOS `sips` + `iconutil`).
 # Find the source flexibly (any *.png in assets whose name has "icon").
 ICON_SRC=""
