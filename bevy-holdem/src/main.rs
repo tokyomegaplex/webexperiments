@@ -1262,10 +1262,10 @@ fn setup(
     // --- Bubble the bartender: a billboard standee behind the counter, with
     // directional sprites so he can idle, turn to the bar, and stroll around ---
     {
-        // Behind the bar, raised so his whole body sits above the counter top —
-        // his wide billboard then never sweeps through the bar when it turns to
-        // face the camera (the counter/shelves are all below his feet).
-        let base = Vec3::new(-7.5, floor_y + 3.4, bar_z - 0.1);
+        // Behind the bar at normal standing height, centred in the gap between
+        // the drinks shelf and the counter. His turn is clamped (see bar_standee)
+        // so his billboard never swings back into the shelf.
+        let base = Vec3::new(-7.5, floor_y + 2.4, bar_z + 0.1);
         let sprites = bubble_sprites();
         let mats: [Handle<StandardMaterial>; 4] = sprites.map(|path| {
             let tex = asset_server.load(path);
@@ -1795,6 +1795,10 @@ fn setup(
                 ..default()
             },
             TextColor(Color::srgb(1.0, 0.93, 0.6)),
+            TextShadow {
+                offset: Vec2::splat(2.0),
+                color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+            },
             TextLayout::new_with_justify(Justify::Center),
             Node {
                 position_type: PositionType::Absolute,
@@ -1883,6 +1887,10 @@ fn setup(
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.93, 0.6)),
+        TextShadow {
+            offset: Vec2::splat(2.0),
+            color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+        },
         TextLayout::new_with_justify(Justify::Center),
         Node {
             position_type: PositionType::Absolute,
@@ -1900,6 +1908,10 @@ fn setup(
             ..default()
         },
         TextColor(Color::srgba(0.96, 0.95, 0.88, 0.0)),
+        TextShadow {
+            offset: Vec2::splat(2.0),
+            color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+        },
         TextLayout::new_with_justify(Justify::Center),
         Node {
             position_type: PositionType::Absolute,
@@ -4271,7 +4283,13 @@ fn bar_standee(
             pos += Vec3::new(nx * 0.02, ny * 0.02, 0.0);
         }
         t.translation = pos;
-        t.look_at(Vec3::new(cam_pos.x, pos.y, cam_pos.z), Vec3::Y);
+        // Face the camera, but clamp the turn so his wide billboard never swings
+        // back into the drinks shelf (or forward into the counter) behind/in
+        // front of him. He stays roughly facing the room.
+        let yaw = (cam_pos.x - pos.x).atan2(cam_pos.z - pos.z);
+        let cy = yaw.clamp(-0.3, 0.3);
+        let look = pos + Vec3::new(cy.sin(), 0.0, cy.cos());
+        t.look_at(Vec3::new(look.x, pos.y, look.z), Vec3::Y);
         let nlean = hash11(b.seed * 3.7 + step * 0.009) * 2.0 - 1.0;
         t.rotate_local_z(nlean * 0.01);
 
@@ -5000,22 +5018,23 @@ fn action_ticker(
     time: Res<Time>,
     poker: Res<Poker>,
     ui: Res<AppUi>,
-    mut q: Query<(&mut Node, &mut Text, &mut TextColor), With<ActionTicker>>,
+    mut q: Query<(&mut Node, &mut Text, &mut TextColor, &mut TextShadow), With<ActionTicker>>,
     mut last: Local<String>,
     mut shown_at: Local<f32>,
 ) {
     let now = time.elapsed_secs();
     if ui.on_title {
         *last = poker.log.clone(); // swallow startup log so it doesn't pop in
-        for (_, _, mut color) in &mut q {
+        for (_, _, mut color, mut shadow) in &mut q {
             *color = TextColor(Color::srgba(0.96, 0.95, 0.88, 0.0));
+            shadow.color = Color::srgba(0.0, 0.0, 0.0, 0.0);
         }
         return;
     }
     if poker.log != *last {
         *last = poker.log.clone();
         *shown_at = now;
-        for (_, mut text, _) in &mut q {
+        for (_, mut text, _, _) in &mut q {
             *text = Text::new(poker.log.clone());
         }
     }
@@ -5030,9 +5049,10 @@ fn action_ticker(
     } else {
         0.0
     };
-    for (mut node, _, mut color) in &mut q {
+    for (mut node, _, mut color, mut shadow) in &mut q {
         node.top = Val::Px(74.0 - (age.min(3.0)) * 6.0);
         *color = TextColor(Color::srgba(0.96, 0.95, 0.88, alpha));
+        shadow.color = Color::srgba(0.0, 0.0, 0.0, 0.85 * alpha);
     }
 }
 
