@@ -147,6 +147,14 @@ struct FlyingChip {
 #[derive(Component)]
 struct PotChip;
 
+/// A chip animating its intro drop: rains down from above to `rest_y`.
+#[derive(Component)]
+struct ChipDrop {
+    rest_y: f32,
+    start: f32,
+    dur: f32,
+}
+
 /// A betting action button. `CheckFold` shows "Check" when checking is legal
 /// (and never lets you fold for free) and "Fold" when facing a bet.
 #[derive(Component, Clone, Copy)]
@@ -515,6 +523,10 @@ enum GameOverBtn {
 #[derive(Resource)]
 struct NeedsRedraw(bool);
 
+/// True for one stack-redraw at the start of a game, so the chips rain in.
+#[derive(Resource)]
+struct IntroDrop(bool);
+
 /// When SCREENSHOT=<path> is set, the app renders a few frames, saves a PNG to
 /// that path, and exits — used for automated visual checks (headless via Xvfb).
 #[derive(Resource)]
@@ -524,6 +536,18 @@ struct ShotState {
 }
 
 fn main() {
+    // When launched as a bundled macOS .app (cwd = "/"), assets sit next to the
+    // executable. Switch to that directory so the asset server and the folder
+    // scanners find them. Only do this if `assets/` is actually beside the exe,
+    // so `cargo run` (assets in the project root) is unaffected.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("assets").is_dir() {
+                let _ = std::env::set_current_dir(dir);
+            }
+        }
+    }
+
     // Headless captures (SCREENSHOT / DEAL_DEMO) skip the title screen.
     let screenshot_env = env::var("SCREENSHOT").is_ok();
     let demo_env = env::var("DEAL_DEMO").is_ok();
@@ -563,6 +587,7 @@ fn main() {
         last_input: 0.0,
         level: 0,
     })
+    .insert_resource(IntroDrop(true))
     .insert_resource(SfxRng::new(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -587,6 +612,7 @@ fn main() {
             turn_arrow,
             bar_standee,
             chip_fly,
+            chip_drop,
             redraw_table,
             hud,
             money_labels,
@@ -2218,12 +2244,27 @@ fn setup(
 
     // --- background music: discover the songs in assets/music ---
     {
+        let paths = scan_music();
         let songs: Vec<Handle<AudioSource>> =
-            scan_music().iter().map(|p| asset_server.load(p.clone())).collect();
+            paths.iter().map(|p| asset_server.load(p.clone())).collect();
+        // Shuffle the play order right now with a fresh time seed, independent of
+        // any other RNG, so the first song is genuinely random every launch.
+        let mut seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64 | 1)
+            .unwrap_or(1);
+        let mut order: Vec<usize> = (0..songs.len()).collect();
+        for i in (1..order.len()).rev() {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let j = (seed >> 33) as usize % (i + 1);
+            order.swap(i, j);
+        }
         commands.insert_resource(Music {
             songs,
-            order: Vec::new(),
-            pos: 0,
+            order,
+            pos: usize::MAX, // sentinel: first play uses order[0] as-is
             vol: 0.25,
             on: true,
             last_street: Street::HandOver,
@@ -3680,6 +3721,8 @@ fn redraw_table(
     mut needs: ResMut<NeedsRedraw>,
     poker: Res<Poker>,
     ui: Res<AppUi>,
+    time: Res<Time>,
+    mut intro: ResMut<IntroDrop>,
     assets: Res<PokerAssets>,
     mut faces: ResMut<CardFaces>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -3741,8 +3784,12 @@ fn redraw_table(
     // game is fast-forwarded with no throw animations, so draw a static pile then
     // so the pot is still visible.
     if poker.paused && g.pot() > 0 {
-        spawn_chips(&mut commands, &assets, POT_CENTER.x, POT_CENTER.z, ft, g.pot(), Vec2::new(1.0, 0.0));
+        spawn_chips(&mut commands, &assets, POT_CENTER.x, POT_CENTER.z, ft, g.pot(), Vec2::new(1.0, 0.0), None);
     }
+
+    // Stacks rain down once at the start of a game (the intro flourish).
+    let drop = if intro.0 { Some(time.elapsed_secs()) } else { None };
+    intro.0 = false;
 
     // Per-seat: stacks, hole cards, dealer button.
     for (s, p) in g.players.iter().enumerate() {
@@ -3754,7 +3801,7 @@ fn redraw_table(
         if p.stack > 0 {
             let bx = cosv * poker.rx * 0.92 + (-sinv) * 0.55;
             let bz = sinv * poker.rz * 0.92 + cosv * 0.55;
-            spawn_chips(&mut commands, &assets, bx, bz, ft, p.stack, Vec2::new(-sinv, cosv));
+            spawn_chips(&mut commands, &assets, bx, bz, ft, p.stack, Vec2::new(-sinv, cosv), drop);
         }
 
         // While the deal animation plays, the sliding cards stand in for the
@@ -3950,10 +3997,12 @@ fn spawn_chips(
     felt_top: f32,
     amount: u32,
     dir: Vec2,
+    drop: Option<f32>,
 ) {
     if amount == 0 {
         return;
     }
+    let mut chip_i = 0usize;
     let piles = chip_breakdown(amount);
     let n = piles.len();
     // Lay the piles out in a compact grid (up to 3 across), spreading width along
@@ -3986,16 +4035,34 @@ fn spawn_chips(
             let rot = Quat::from_rotation_y(yaw)
                 * Quat::from_rotation_x(lean_x)
                 * Quat::from_rotation_z(lean_z);
-            commands.spawn((
+            let rest_y = felt_top + 0.022 + k as f32 * 0.043;
+            // Intro flourish: the whole stack rains down from above with a small
+            // per-chip stagger, then settles at rest_y.
+            let (start_y, anim) = match drop {
+                Some(now) => (
+                    rest_y + 5.0,
+                    Some(ChipDrop {
+                        rest_y,
+                        start: now + chip_i as f32 * 0.012,
+                        dur: 0.5,
+                    }),
+                ),
+                None => (rest_y, None),
+            };
+            let mut e = commands.spawn((
                 Mesh3d(assets.chip_mesh.clone()),
                 MeshMaterial3d(assets.chip_mats[color].clone()),
                 Transform {
-                    translation: Vec3::new(px + jx, felt_top + 0.022 + k as f32 * 0.043, pz + jz),
+                    translation: Vec3::new(px + jx, start_y, pz + jz),
                     rotation: rot,
                     scale: Vec3::new(0.18, 0.04, 0.18),
                 },
                 TableProp,
             ));
+            if let Some(a) = anim {
+                e.insert(a);
+            }
+            chip_i += 1;
         }
     }
 }
@@ -4297,6 +4364,25 @@ fn throw_chips_to_pot(
     }
 }
 
+/// Animate the intro chip-rain: each chip falls from above to its rest height
+/// with an ease-out, then the component is removed and it sits still.
+fn chip_drop(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &ChipDrop, &mut Transform)>,
+) {
+    let now = time.elapsed_secs();
+    for (e, d, mut t) in &mut q {
+        let p = ((now - d.start) / d.dur).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - p) * (1.0 - p); // ease-out (fast then settle)
+        t.translation.y = d.rest_y + 5.0 * (1.0 - eased);
+        if p >= 1.0 {
+            t.translation.y = d.rest_y;
+            commands.entity(e).remove::<ChipDrop>();
+        }
+    }
+}
+
 fn chip_fly(
     time: Res<Time>,
     mut commands: Commands,
@@ -4545,6 +4631,9 @@ fn music_system(
         let n = music.songs.len();
         if music.order.is_empty() {
             reshuffle_songs(&mut music, &mut rng);
+        } else if music.pos == usize::MAX {
+            // First song of the game: use the order shuffled at startup as-is.
+            music.pos = 0;
         } else {
             music.pos += 1;
             if music.pos >= music.order.len() {
@@ -4786,6 +4875,7 @@ fn game_over_ui(
     mut env: ResMut<Environment>,
     mut poker: ResMut<Poker>,
     mut clock: ResMut<BlindClock>,
+    mut intro: ResMut<IntroDrop>,
     mut needs: ResMut<NeedsRedraw>,
     mut root: Query<&mut Visibility, (With<GameOverRoot>, Without<GameOverBtn>)>,
     mut title: Query<&mut Text, (With<GameOverTitle>, Without<GameOverSub>)>,
@@ -4852,6 +4942,7 @@ fn game_over_ui(
         reset_game(&mut poker);
         clock.active = 0.0;
         clock.level = 0;
+        intro.0 = true; // rain the chips in for the new game
         *mode = GameMode::Playing;
         needs.0 = true;
     }
