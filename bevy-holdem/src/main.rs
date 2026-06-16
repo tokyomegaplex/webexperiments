@@ -1262,9 +1262,10 @@ fn setup(
     // --- Bubble the bartender: a billboard standee behind the counter, with
     // directional sprites so he can idle, turn to the bar, and stroll around ---
     {
-        // Behind the bar in the gap between the back cabinet and the counter,
-        // at a natural standing height.
-        let base = Vec3::new(-7.5, floor_y + 2.4, bar_z - 0.1);
+        // Behind the bar, raised so his whole body sits above the counter top —
+        // his wide billboard then never sweeps through the bar when it turns to
+        // face the camera (the counter/shelves are all below his feet).
+        let base = Vec3::new(-7.5, floor_y + 3.4, bar_z - 0.1);
         let sprites = bubble_sprites();
         let mats: [Handle<StandardMaterial>; 4] = sprites.map(|path| {
             let tex = asset_server.load(path);
