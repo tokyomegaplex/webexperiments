@@ -23,23 +23,42 @@ mkdir -p "$APP/Contents/MacOS"
 cp "target/release/$BIN" "$APP/Contents/MacOS/$BIN"
 cp -R assets "$APP/Contents/MacOS/assets"
 
-# App icon: convert assets/pokermon icon.png -> AppIcon.icns (needs macOS tools).
-ICON_SRC="assets/pokermon icon.png"
+# App icon: convert a PNG -> AppIcon.icns (needs macOS `sips` + `iconutil`).
+# Find the source flexibly (any *.png in assets whose name has "icon").
+ICON_SRC=""
+if [[ -f "assets/pokermon icon.png" ]]; then
+    ICON_SRC="assets/pokermon icon.png"
+else
+    ICON_SRC="$(find assets -maxdepth 1 -iname '*icon*.png' | head -n1 || true)"
+fi
 ICON_NAME=""
-if [[ -f "$ICON_SRC" ]]; then
-    echo "==> Building app icon from $ICON_SRC ..."
+if [[ -n "$ICON_SRC" && -f "$ICON_SRC" ]]; then
+    echo "==> Building app icon from: $ICON_SRC"
     mkdir -p "$APP/Contents/Resources"
     ICONSET="$(mktemp -d)/AppIcon.iconset"
     mkdir -p "$ICONSET"
-    for sz in 16 32 64 128 256 512; do
-        sips -z $sz $sz       "$ICON_SRC" --out "$ICONSET/icon_${sz}x${sz}.png"     >/dev/null
-        sips -z $((sz*2)) $((sz*2)) "$ICON_SRC" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
-    done
-    iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+    # iconutil requires EXACTLY these names — any extra/missing file makes it
+    # reject the whole iconset, which is why no icon was produced before.
+    gen() { sips -z "$1" "$1" "$ICON_SRC" --out "$ICONSET/$2" >/dev/null 2>&1; }
+    gen 16   icon_16x16.png
+    gen 32   icon_16x16@2x.png
+    gen 32   icon_32x32.png
+    gen 64   icon_32x32@2x.png
+    gen 128  icon_128x128.png
+    gen 256  icon_128x128@2x.png
+    gen 256  icon_256x256.png
+    gen 512  icon_256x256@2x.png
+    gen 512  icon_512x512.png
+    gen 1024 icon_512x512@2x.png
+    if iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"; then
+        ICON_NAME="AppIcon"
+        echo "    -> Contents/Resources/AppIcon.icns"
+    else
+        echo "    !! iconutil failed — check that $ICON_SRC is a valid PNG."
+    fi
     rm -rf "$(dirname "$ICONSET")"
-    ICON_NAME="AppIcon"
 else
-    echo "==> (No $ICON_SRC found — skipping icon. Add it and re-run for a custom icon.)"
+    echo "==> (No icon PNG found in assets/ — skipping. Add 'pokermon icon.png'.)"
 fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -61,8 +80,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Nudge Finder to refresh the icon (it caches aggressively, so a freshly-built
+# .app often shows a blank/old icon until the cache is poked).
+touch "$APP"
+killall Finder >/dev/null 2>&1 || true
+
 echo "==> Done: $APP"
+if [[ -n "$ICON_NAME" ]]; then
+    echo "   Icon:   embedded ($ICON_SRC)."
+    echo "           If Finder still shows the old icon, move the .app to another"
+    echo "           folder and back, or log out/in (macOS icon cache)."
+fi
 echo "   Test it:    open \"$APP\""
 echo "   To share:   zip it (right-click -> Compress) and send the .zip."
 echo "   Note: an Apple-Silicon build won't run on Intel Macs (or vice versa)."
-echo "         For a universal build, see the comment in Cargo notes."
