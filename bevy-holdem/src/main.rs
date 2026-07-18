@@ -3823,13 +3823,17 @@ fn redraw_table(
             let hx = cosv * poker.rx * 0.72;
             let hz = sinv * poker.rz * 0.72;
             let (tx, tz) = (-sinv, cosv); // tangent, to lay the two cards side by side
+            // Only reveal opponents' cards at a showdown you're actually part of.
+            // If you folded, they don't have to show — keep their cards face-down.
+            let reveal = showdown && g.players[0].in_hand();
+            let tilt = if reveal { card_tilt } else { 0.0 };
             for (k, card) in p.hole.iter().enumerate() {
                 let off = (k as f32 - 0.5) * 0.46;
                 // Gentle spin only, and lay the second card clearly *on top of*
                 // the first (raised a touch) so they overlap like real cards
                 // instead of intersecting through each other.
                 let yaw = (hash11(s as f32 * 7.0 + k as f32 * 3.1) - 0.5) * 0.06;
-                let mat = if showdown {
+                let mat = if reveal {
                     face_material(&mut faces, &mut materials, &asset_server, &card.code())
                 } else {
                     assets.card_back.clone()
@@ -3843,7 +3847,7 @@ fn redraw_table(
                     hz + tz * off,
                     ft + k as f32 * 0.016,
                     0.85,
-                    card_tilt,
+                    tilt,
                     yaw,
                 );
             }
@@ -4016,16 +4020,27 @@ fn spawn_chips(
         return;
     }
     let mut chip_i = 0usize;
-    let piles = chip_breakdown(amount);
-    let n = piles.len();
-    // Lay the piles out in a compact grid (up to 3 across), spreading width along
-    // `dir` and depth along its perpendicular. Spacing is wider than a chip so
+    // Split each denomination into short sub-piles (<= MAX_PILE tall) so the
+    // stacks stay low and don't block the cards, then spread all the sub-piles
+    // out in a wide grid.
+    const MAX_PILE: u32 = 5;
+    let mut subpiles: Vec<(usize, u32)> = Vec::new();
+    for (color, count) in chip_breakdown(amount) {
+        let mut c = count;
+        while c > 0 && subpiles.len() < 30 {
+            let h = c.min(MAX_PILE);
+            subpiles.push((color, h));
+            c -= h;
+        }
+    }
+    let n = subpiles.len();
+    // Lay the piles out in a wide, shallow grid. Spacing is wider than a chip so
     // neighbouring piles never overlap. Chip radius 0.18 → diameter 0.36.
     let perp = Vec2::new(-dir.y, dir.x);
-    let spacing = 0.42;
-    let per_row = 3usize;
+    let spacing = 0.44;
+    let per_row = 5usize;
     let rows = n.div_ceil(per_row);
-    for (pi, &(color, count)) in piles.iter().enumerate() {
+    for (pi, &(color, height)) in subpiles.iter().enumerate() {
         let row = pi / per_row;
         let col = pi % per_row;
         let row_len = (n - row * per_row).min(per_row);
@@ -4033,7 +4048,6 @@ fn spawn_chips(
         let doff = (row as f32 - (rows as f32 - 1.0) / 2.0) * spacing;
         let px = cx + dir.x * woff + perp.x * doff;
         let pz = cz + dir.y * woff + perp.y * doff;
-        let height = count.min(18);
         for k in 0..height {
             // Per-chip randomness so a stack looks hand-made, not machined: spin
             // each chip a random amount around its axis (so the white edge spots
@@ -4123,9 +4137,9 @@ fn hud(
 
     // Big centre banner at showdown.
     let banner_text = if g.street == Street::HandOver {
-        // Only a real showdown (more than one player still holding cards) reveals
-        // a hand — if everyone else folded, the winner never showed theirs.
-        let showdown = g.live_count() > 1;
+        // Only name the winning hand at a showdown you were part of: if everyone
+        // else folded, or you folded, nobody has to reveal.
+        let showdown = g.live_count() > 1 && g.players[0].in_hand();
         g.last_payouts
             .iter()
             .map(|pay| {
@@ -4521,8 +4535,11 @@ fn money_labels(
                 let second = if g.street == Street::HandOver {
                     if player.folded {
                         "folded".to_string()
-                    } else {
+                    } else if g.players[0].in_hand() && g.live_count() > 1 {
+                        // Only show made hands at a showdown you were part of.
                         g.hand_value(s).map(|hv| hv.category.name().to_string()).unwrap_or_default()
+                    } else {
+                        String::new()
                     }
                 } else if player.all_in {
                     "all-in".to_string()
