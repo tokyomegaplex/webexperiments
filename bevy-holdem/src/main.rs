@@ -418,6 +418,25 @@ struct AppUi {
     screenshot: bool,
 }
 
+/// Tutorial mode: shows a hand-ranking cheat sheet and contextual coaching tips.
+#[derive(Resource)]
+struct Tutorial(bool);
+
+/// A button on the title screen.
+#[derive(Component, Clone, Copy, PartialEq)]
+enum TitleBtn {
+    Play,
+    Tutorial,
+}
+
+/// The tutorial overlay pieces (only shown in tutorial mode).
+#[derive(Component)]
+struct TutorialCheatSheet;
+#[derive(Component)]
+struct TutorialTip;
+#[derive(Component)]
+struct TutorialTipText;
+
 /// The two independently-controllable audio channels in the options menu.
 #[derive(Clone, Copy, PartialEq)]
 enum VolKind {
@@ -588,6 +607,7 @@ fn main() {
         level: 0,
     })
     .insert_resource(IntroDrop(true))
+    .insert_resource(Tutorial(env::var("SHOW_TUTORIAL").is_ok()))
     .insert_resource(SfxRng::new(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -644,7 +664,8 @@ fn main() {
             action_ticker,
             blind_clock,
         ),
-    );
+    )
+    .add_systems(Update, (title_buttons, tutorial_system));
 
     if let Ok(path) = env::var("SCREENSHOT") {
         app.insert_resource(ShotState { path, frame: 0 })
@@ -2315,14 +2336,135 @@ fn setup(
                 },
                 TextColor(Color::srgb(1.0, 0.85, 0.4)),
             ));
+            t.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(22.0),
+                margin: UiRect::top(Val::Px(10.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                for (btn, label) in [(TitleBtn::Play, "Play"), (TitleBtn::Tutorial, "Tutorial")] {
+                    row.spawn((
+                        Button,
+                        Node {
+                            padding: UiRect::axes(Val::Px(28.0), Val::Px(14.0)),
+                            border: UiRect::all(Val::Px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.2, 0.42, 0.26)),
+                        BorderColor::all(Color::srgb(0.85, 0.72, 0.35)),
+                        btn,
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Text::new(label),
+                            TextFont {
+                                font_size: 28.0,
+                                ..default()
+                            },
+                            TextColor(Color::WHITE),
+                        ));
+                    });
+                }
+            });
             t.spawn((
-                Text::new("click or press  Enter  to play"),
+                Text::new("New to poker? Try the Tutorial. (Enter = quick play)"),
                 TextFont {
-                    font_size: 24.0,
+                    font_size: 18.0,
                     ..default()
                 },
-                TextColor(Color::srgb(0.9, 0.9, 0.85)),
+                TextColor(Color::srgb(0.8, 0.8, 0.75)),
             ));
+        });
+
+    // --- tutorial overlays (shown only in tutorial mode) ---
+    // Hand-ranking cheat sheet on the left.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(12.0),
+                top: Val::Px(120.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(12.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.82)),
+            BorderColor::all(Color::srgba(0.85, 0.72, 0.35, 0.7)),
+            Visibility::Hidden,
+            GlobalZIndex(45),
+            TutorialCheatSheet,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new("HAND RANKINGS  (high → low)"),
+                TextFont {
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.85, 0.4)),
+            ));
+            for line in [
+                "Straight Flush  — 5 in a row, one suit",
+                "Four of a Kind  — four matching",
+                "Full House      — three + a pair",
+                "Flush           — 5 of one suit",
+                "Straight        — 5 in a row",
+                "Three of a Kind — three matching",
+                "Two Pair        — two pairs",
+                "Pair            — two matching",
+                "High Card       — none of the above",
+            ] {
+                p.spawn((
+                    Text::new(line),
+                    TextFont {
+                        font_size: 14.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.92, 0.92, 0.88)),
+                ));
+            }
+        });
+    // Contextual coaching tip, a banner across the top under the win banner.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(70.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Visibility::Hidden,
+            GlobalZIndex(45),
+            TutorialTip,
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    max_width: Val::Px(760.0),
+                    padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.06, 0.10, 0.14, 0.92)),
+                BorderColor::all(Color::srgb(0.4, 0.7, 0.95)),
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: 19.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.85, 0.95, 1.0)),
+                    TextLayout::new_with_justify(Justify::Center),
+                    TutorialTipText,
+                ));
+            });
         });
 
     // --- pause menu overlay (toggle with Enter); audio options inside ---
@@ -4582,17 +4724,106 @@ fn ui_input(
         return;
     }
     if ui.on_title {
-        if keys.just_pressed(KeyCode::Enter)
-            || keys.just_pressed(KeyCode::Space)
-            || mouse.just_pressed(MouseButton::Left)
-        {
+        // Enter/Space = quick play; the Play/Tutorial buttons are handled in
+        // `title_buttons`. (No generic mouse-dismiss, so the buttons work.)
+        if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
             ui.on_title = false;
         }
+        let _ = mouse;
         return;
     }
     if keys.just_pressed(KeyCode::Enter) {
         ui.paused = !ui.paused;
     }
+}
+
+/// Handle the title-screen Play / Tutorial buttons.
+fn title_buttons(
+    mut ui: ResMut<AppUi>,
+    mut tut: ResMut<Tutorial>,
+    mut q: Query<(&TitleBtn, &Interaction, &mut BackgroundColor), With<Button>>,
+) {
+    if !ui.on_title {
+        return;
+    }
+    for (btn, interaction, mut bg) in &mut q {
+        match *interaction {
+            Interaction::Pressed => {
+                *bg = BackgroundColor(Color::srgb(0.16, 0.55, 0.28));
+                tut.0 = *btn == TitleBtn::Tutorial;
+                ui.on_title = false;
+            }
+            Interaction::Hovered => *bg = BackgroundColor(Color::srgb(0.26, 0.5, 0.32)),
+            Interaction::None => *bg = BackgroundColor(Color::srgb(0.2, 0.42, 0.26)),
+        }
+    }
+}
+
+/// Show/update the tutorial cheat sheet and contextual coaching tip.
+fn tutorial_system(
+    tut: Res<Tutorial>,
+    ui: Res<AppUi>,
+    poker: Res<Poker>,
+    mut sheet: Query<&mut Visibility, (With<TutorialCheatSheet>, Without<TutorialTip>)>,
+    mut tip: Query<&mut Visibility, (With<TutorialTip>, Without<TutorialCheatSheet>)>,
+    mut tip_text: Query<&mut Text, With<TutorialTipText>>,
+) {
+    let show = tut.0 && !ui.on_title && !ui.paused;
+    let vis = if show {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut sheet {
+        *v = vis;
+    }
+    for mut v in &mut tip {
+        *v = vis;
+    }
+    if show {
+        let text = tutorial_text(&poker);
+        for mut t in &mut tip_text {
+            *t = Text::new(text.clone());
+        }
+    }
+}
+
+/// The contextual coaching line for the current game state.
+fn tutorial_text(poker: &Poker) -> String {
+    let g = &poker.game;
+    let me = &g.players[0];
+    if poker.pending_deal || poker.dealing {
+        return "New hand! You get 2 private cards (shown bottom-left). Make the best 5-card \
+                hand using them plus the shared cards in the middle."
+            .to_string();
+    }
+    if g.street == Street::HandOver {
+        return "Showdown — the best 5-card hand wins the pot (see the ranking chart, left). \
+                Press Space / Next Hand to deal again."
+            .to_string();
+    }
+    let street_tip = match g.street {
+        Street::Preflop => {
+            "Pre-flop: you bet on just your 2 cards. The 'blinds' are forced bets that seed the pot."
+        }
+        Street::Flop => "The flop: 3 shared cards are dealt. Combine them with your 2 cards.",
+        Street::Turn => "The turn: a 4th shared card, then another round of betting.",
+        Street::River => "The river: the 5th and final shared card — last betting round.",
+        _ => "",
+    };
+    if me.folded {
+        return format!("{street_tip}   You folded this hand — sit back and watch it play out.");
+    }
+    if g.to_act == 0 && !me.all_in {
+        let call = g.call_amount(0);
+        let action = if call == 0 {
+            "YOUR TURN — Check (stay in for free) or Raise (bet). ".to_string()
+        } else {
+            format!("YOUR TURN — Call ${call} to stay in, Raise to bet more, or Fold to give up. ")
+        };
+        return format!("{action}{street_tip}");
+    }
+    format!("{street_tip}   (Waiting on the other players to act…)")
 }
 
 /// Show/hide the title and pause overlays from the UI state.
