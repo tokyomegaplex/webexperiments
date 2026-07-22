@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TITMOUSE — Y2K GPU Box Art Renderer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Michroma&family=Rajdhani:wght@500;600;700&family=Zen+Dots&family=Chakra+Petch:ital,wght@0,600;1,700&display=swap" rel="stylesheet">
+<style>
+  :root{ --panel:#0c0f1a; --edge:#26304d; --accent:#3df0ff; --accent2:#ff2fd0; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:#04060d; color:#cfe3ff;
+    font-family:"Rajdhani",system-ui,sans-serif; overflow:hidden; }
+  #stage{ position:fixed; inset:0; }
+  canvas{ display:block; }
+  /* the 2D overlay canvas sits on top of the WebGL canvas */
+  #overlay{ position:fixed; inset:0; pointer-events:none; }
+  #gl{ position:fixed; inset:0; }
+
+  /* ---- control panel ---- */
+  #panel{ position:fixed; top:14px; left:14px; width:250px; z-index:20;
+    background:linear-gradient(180deg,#111726ee,#080b14ee);
+    border:1px solid var(--edge); border-radius:12px; padding:12px 12px 14px;
+    backdrop-filter:blur(6px); box-shadow:0 8px 30px #000a, inset 0 1px 0 #ffffff10;
+    font-size:13px; max-height:calc(100vh - 28px); overflow:auto; }
+  #panel h1{ font-family:"Orbitron"; font-weight:900; font-size:13px; letter-spacing:.14em;
+    margin:0 0 2px; color:#eaf6ff; text-transform:uppercase; }
+  #panel .sub{ font-family:"Michroma"; font-size:8.5px; letter-spacing:.28em;
+    color:var(--accent); opacity:.85; margin:0 0 10px; }
+  .row{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:7px 0; }
+  .row label{ letter-spacing:.03em; font-weight:600; color:#b9cdf0; }
+  .seg{ display:flex; gap:4px; flex-wrap:wrap; margin:4px 0 10px; }
+  .seg button, .btn{ font-family:"Rajdhani"; font-weight:700; font-size:11px; letter-spacing:.05em;
+    color:#bcd3f7; background:#151d31; border:1px solid var(--edge); border-radius:7px;
+    padding:5px 8px; cursor:pointer; transition:.12s; }
+  .seg button:hover,.btn:hover{ border-color:var(--accent); color:#fff; }
+  .seg button.on{ background:linear-gradient(180deg,#1d5cff,#0b3bd6); color:#fff; border-color:#6ea0ff;
+    box-shadow:0 0 10px #2f6bff88; }
+  input[type=range]{ width:120px; accent-color:var(--accent); }
+  .hint{ font-size:11px; color:#7f93b8; line-height:1.35; margin-top:8px; border-top:1px solid #1a2338; padding-top:8px; }
+  .divider{ height:1px; background:linear-gradient(90deg,transparent,#2a3860,transparent); margin:10px 0; }
+  .btn.big{ width:100%; margin-top:4px; padding:8px; font-size:12px; letter-spacing:.08em;
+    background:linear-gradient(180deg,#ff2fd0,#b3149a); color:#fff; border-color:#ff86e6;
+    box-shadow:0 0 14px #ff2fd066; }
+  .btn.ghost{ width:100%; margin-top:6px; background:#141d31; }
+  #loading{ position:fixed; inset:0; display:grid; place-items:center; z-index:40; background:#04060d;
+    font-family:"Orbitron"; letter-spacing:.3em; color:var(--accent); font-size:14px; }
+  #loading small{ display:block; text-align:center; margin-top:10px; color:#5f74a0; letter-spacing:.2em; font-size:9px;}
+  .kbd{ font-family:"Chakra Petch"; background:#0f1626; border:1px solid #26304d; border-radius:4px; padding:1px 5px; color:#9fb6e0;}
+</style>
+</head>
+<body>
+<div id="loading">INITIALIZING VISUAL PROCESSING UNIT…<small>LOADING SHADERS · ENV MAP · FUR KERNELS</small></div>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="panel">
+  <h1>Titmouse VPU</h1>
+  <p class="sub">BOX-ART RENDER LAB</p>
+
+  <div class="row"><label>Body finish</label></div>
+  <div class="seg" id="finish">
+    <button data-v="chrome" class="on">Chrome</button>
+    <button data-v="irid">Iridescent</button>
+    <button data-v="holo">Holo-Energy</button>
+  </div>
+
+  <div class="row"><label>Backdrop</label></div>
+  <div class="seg" id="backdrop">
+    <button data-v="void" class="on">Void</button>
+    <button data-v="sunset">Sunset</button>
+    <button data-v="cyber">Cyber</button>
+    <button data-v="studio">Studio</button>
+  </div>
+
+  <div class="divider"></div>
+  <div class="row"><label>Bloom</label><input id="bloom" type="range" min="0" max="2.2" step="0.01" value="0.62"></div>
+  <div class="row"><label>Chroma / CRT</label><input id="fx" type="range" min="0" max="1" step="0.01" value="0.5"></div>
+  <div class="row"><label>Auto-spin</label><input id="spin" type="range" min="0" max="1" step="0.01" value="0.25"></div>
+  <div class="row"><label>Water level</label><input id="water" type="range" min="-1.4" max="0.4" step="0.01" value="-0.55"></div>
+
+  <div class="divider"></div>
+  <div class="row"><label>Box-art overlay</label>
+    <button id="toggleOverlay" class="btn">ON</button></div>
+  <div class="row"><label>Scanlines</label>
+    <button id="toggleScan" class="btn">ON</button></div>
+
+  <button id="export" class="btn big">⬇ EXPORT PNG (4K)</button>
+  <button id="clean" class="btn ghost">Clean render (no overlay)</button>
+
+  <p class="hint">Drag to orbit · scroll to zoom · <span class="kbd">H</span> hide panel · <span class="kbd">E</span> export.
+  Edit the <b>COPY</b> object in this file to change all box-art text.</p>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { Water } from 'three/addons/objects/Water.js';
+import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
+
+/* ==================================================================
+   BOX-ART COPY  — edit freely. This is what gets printed on the art.
+   ================================================================== */
+const COPY = {
+  brand:   "TITMOUSE",
+  model:   "GX-9000 ULTRA",
+  tagline: "ADVANCED GRAPHIX ACCELERATION",
+  starburst: "SUPER-\nCHARGED!",
+  badges:  ["PHYS-X", "512-BIT", "128MB DDR", "REAL-TIME FUR", "HDR LIGHTING", "4× AGP"],
+  footL:   "TITMOUSE VISUAL PROCESSING UNIT",
+  footR:   "REAL-TIME · FUR · WATER · IRIDESCENCE",
+  spec:    "T&L ENGINE • ANISOTROPIC • ANTI-ALIAS • PER-PIXEL SHADING"
+};
+
+/* ============================ SCENE ============================ */
+const glCanvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias:true, preserveDrawingBuffer:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 0.1, 500);
+camera.position.set(0.2, 0.9, 6.4);
+
+const controls = new OrbitControls(camera, glCanvas);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.target.set(0, 0.55, 0);
+controls.minDistance = 3; controls.maxDistance = 14;
+controls.maxPolarAngle = Math.PI*0.56;
+
+/* ---------- procedural equirect environment (for chrome reflections) ---------- */
+const pmrem = new THREE.PMREMGenerator(renderer);
+const PRESETS = {
+  void:   [['#0a1030',0],['#141b3f',.55],['#070912',1], '#7cc0ff','#ff4fd8'],
+  sunset: [['#2a1140',0],['#ff5a3c',.62],['#ffd27a',1], '#ffe0a0','#ff7bd0'],
+  cyber:  [['#04122a',0],['#0b2f6b',.5],['#02060f',1],  '#4ff0ff','#ff2fd0'],
+  studio: [['#252a36',0],['#454d5e',.5],['#0c0e14',1],  '#ffffff','#bfe4ff'],
+};
+// bright=true builds the reflection env (hot softboxes the chrome mirrors);
+// bright=false builds a moodier backdrop shown behind the hero.
+function makeEnvTexture(preset, bright){
+  const c = document.createElement('canvas'); c.width=1024; c.height=512;
+  const x = c.getContext('2d');
+  const P = PRESETS[preset] || PRESETS.void;
+  const g = x.createLinearGradient(0,0,0,512);
+  g.addColorStop(P[0][1],P[0][0]); g.addColorStop(P[1][1],P[1][0]); g.addColorStop(P[2][1],P[2][0]);
+  x.fillStyle=g; x.fillRect(0,0,1024,512);
+  const glow=(cx,cy,rx,ry,col,a)=>{ x.save(); x.translate(cx,cy); x.scale(rx/ry,1);
+    const rg=x.createRadialGradient(0,0,0,0,0,ry);
+    rg.addColorStop(0,col); rg.addColorStop(1,'#00000000'); x.globalAlpha=a; x.fillStyle=rg;
+    x.beginPath(); x.arc(0,0,ry,0,7); x.fill(); x.restore(); x.globalAlpha=1; };
+  const k = bright ? 1 : 0.32;                    // dim the backdrop version
+  glow(300,140,240,150,'#ffffff', 1.0*k);         // main softbox (white/hot)
+  glow(300,140,240,150,P[3],      0.5*k);         // tinted core
+  glow(770,110,190,150,P[4],      0.85*k);        // rim accent softbox
+  glow(150,320,180,180,P[3],      0.30*k);        // fill
+  glow(512,470,520,240,'#eaf3ff', 0.20*k);        // floor bounce
+  if(bright){                                     // horizontal softbox streaks
+    x.globalAlpha=.5; x.fillStyle='#ffffff';
+    for(let i=0;i<4;i++) x.fillRect(0,96+i*40,1024,10);
+    x.globalAlpha=.22; for(let i=0;i<3;i++) x.fillRect(0,300+i*44,1024,7);
+    x.globalAlpha=1;
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+let envRT;
+function setEnv(preset){
+  const envT = makeEnvTexture(preset, true);
+  const rt = pmrem.fromEquirectangular(envT);
+  if(envRT) envRT.dispose();
+  envRT = rt;
+  scene.environment = rt.texture;
+  if(scene.background && scene.background.dispose) scene.background.dispose();
+  scene.background = makeEnvTexture(preset, false);   // moody backdrop
+  envT.dispose?.();
+}
+
+/* ============================ LIGHTS ============================ */
+const key = new THREE.DirectionalLight(0xfff0dd, 2.4); key.position.set(4,6,4); scene.add(key);
+const rim = new THREE.DirectionalLight(0x4ff0ff, 3.4); rim.position.set(-5,3,-4); scene.add(rim);
+const rim2 = new THREE.DirectionalLight(0xff2fd0, 2.2); rim2.position.set(5,1.5,-5); scene.add(rim2);
+const fill = new THREE.AmbientLight(0x33456e, 0.55); scene.add(fill);
+const under = new THREE.PointLight(0x39e6ff, 2.4, 7, 2); under.position.set(0,-0.7,1.4); scene.add(under);
+
+/* ---------- lens flare on the key light ---------- */
+function softFlareTex(size, col){
+  const c=document.createElement('canvas'); c.width=c.height=size; const x=c.getContext('2d');
+  const g=x.createRadialGradient(size/2,size/2,0,size/2,size/2,size/2);
+  g.addColorStop(0,col); g.addColorStop(0.25,col.replace('1)','0.5)')); g.addColorStop(1,'rgba(0,0,0,0)');
+  x.fillStyle=g; x.fillRect(0,0,size,size); return new THREE.CanvasTexture(c);
+}
+const flare = new Lensflare();
+flare.addElement(new LensflareElement(softFlareTex(512,'rgba(255,255,255,1)'), 500, 0));
+flare.addElement(new LensflareElement(softFlareTex(256,'rgba(120,220,255,1)'), 120, 0.35));
+flare.addElement(new LensflareElement(softFlareTex(256,'rgba(255,90,220,1)'), 90, 0.62));
+flare.addElement(new LensflareElement(softFlareTex(128,'rgba(255,240,200,1)'), 60, 0.9));
+const flareLight = new THREE.PointLight(0xffffff, 0.0001, 1);
+flareLight.position.set(6,7,-3); flareLight.add(flare); scene.add(flareLight);
+
+/* ======================= CUSTOM SHADERS ======================= */
+// Holographic / iridescent energy shader (fresnel hue-shift) — hand written GLSL.
+const holoMat = new THREE.ShaderMaterial({
+  uniforms:{ uTime:{value:0}, uInt:{value:1.0} },
+  transparent:false,
+  vertexShader:`
+    varying vec3 vN; varying vec3 vView;
+    void main(){
+      vec4 wp = modelMatrix * vec4(position,1.0);
+      vN = normalize(mat3(modelMatrix) * normal);
+      vView = normalize(cameraPosition - wp.xyz);
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader:`
+    varying vec3 vN; varying vec3 vView; uniform float uTime; uniform float uInt;
+    vec3 hue(float t){ return 0.55 + 0.45*cos(6.28318*(t + vec3(0.0,0.33,0.66))); }
+    void main(){
+      float f = pow(1.0 - clamp(dot(normalize(vN), normalize(vView)),0.0,1.0), 2.2);
+      vec3 col = hue(f*1.6 + uTime*0.05 + vN.y*0.3);
+      col = mix(col*0.28, col*1.15, f);
+      col += vec3(0.9,0.95,1.0)*pow(f,6.0)*0.6;   // hot rim
+      gl_FragColor = vec4(col*uInt, 1.0);
+    }`
+});
+
+// Shell-fur material factory: alpha-cutout noise fur that fades outward per shell.
+function furMaterial(baseColor){
+  const tex = furTexture();
+  const m = new THREE.MeshStandardMaterial({
+    color:baseColor, map:tex, alphaMap:tex, transparent:true, alphaTest:0.02,
+    roughness:0.65, metalness:0.15, side:THREE.DoubleSide, depthWrite:false
+  });
+  m.onBeforeCompile = (sh)=>{
+    sh.uniforms.uLayer = { value:0 };
+    sh.uniforms.uTime = { value:0 };
+    m.userData.sh = sh;
+    sh.vertexShader = 'uniform float uLayer;\nuniform float uTime;\n' + sh.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       float g = uLayer;
+       transformed += normal * g * 0.14;                       // extrude along normal
+       transformed.x += sin(uTime*2.0 + position.y*4.0)*g*g*0.05; // wind sway
+      `);
+    sh.fragmentShader = 'uniform float uLayer;\n' + sh.fragmentShader.replace(
+      '#include <alphamap_fragment>',
+      `#include <alphamap_fragment>
+       diffuseColor.a *= (1.0 - uLayer*0.9);                   // thin at the tips
+       diffuseColor.rgb *= mix(0.5,1.25,uLayer);               // AO->tip lightening
+      `);
+  };
+  return m;
+}
+function furTexture(){
+  const c=document.createElement('canvas'); c.width=c.height=256; const x=c.getContext('2d');
+  x.fillStyle='#000'; x.fillRect(0,0,256,256);
+  for(let i=0;i<2600;i++){ const a=Math.random(); x.fillStyle=`rgba(255,255,255,${a})`;
+    x.fillRect(Math.random()*256, Math.random()*256, 1.4, 1.4); }
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(4,4); return t;
+}
+
+/* material presets for the hero body */
+function makeChrome(){ return new THREE.MeshStandardMaterial({ color:0xe6f0ff, metalness:1.0, roughness:0.19, envMapIntensity:1.4 }); }
+function makeIrid(){
+  const m = new THREE.MeshPhysicalMaterial({ color:0x0a1428, metalness:0.9, roughness:0.15,
+    iridescence:1.0, iridescenceIOR:2.0, iridescenceThicknessRange:[120,560], clearcoat:1, clearcoatRoughness:0.15, envMapIntensity:1.4 });
+  return m;
+}
+
+/* ======================= HERO: CHROME TITMOUSE ======================= */
+/* A stylized tufted-titmouse mascot: round body, big crest, blunt beak,
+   swept wing + tail, glossy eye — bursting up out of the water.          */
+const hero = new THREE.Group(); scene.add(hero);
+const bodyParts = [];   // parts that swap finish
+const accentParts = []; // iridescent chest / crest accents
+
+function ellip(rx,ry,rz,seg=48){ const g=new THREE.SphereGeometry(1,seg,seg); g.scale(rx,ry,rz); return g; }
+
+let bodyMat = makeChrome();
+function buildHero(){
+  // ---- body (egg, leaning forward) ----
+  const body = new THREE.Mesh(ellip(0.95,1.15,0.9), bodyMat); body.position.y=0.15; hero.add(body); bodyParts.push(body);
+  // ---- head ----
+  const head = new THREE.Mesh(ellip(0.66,0.62,0.62), bodyMat); head.position.set(0,1.28,0.12); hero.add(head); bodyParts.push(head);
+  // ---- signature crest (tufted-titmouse peak: a swept fan of spikes) ----
+  const crestMat = holoMat;
+  const crestSpec = [ [0.0, 1.15, -0.22], [0.0, 0.98, -0.55], [0.0, 0.72, -0.86] ];
+  crestSpec.forEach((s,i)=>{
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.19-i*0.035, s[1], 18), crestMat);
+    spike.position.set(s[0], 1.62 + s[1]*0.42, 0.06 + s[2]*0.55);
+    spike.rotation.x = -0.35 - i*0.30;
+    hero.add(spike); accentParts.push(spike);
+  });
+  // ---- beak (short stout cone, titmice have blunt bills) ----
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.17,0.4,20),
+    new THREE.MeshStandardMaterial({color:0xff9a2e, metalness:0.85, roughness:0.28, emissive:0x3a1400, envMapIntensity:1.2}));
+  beak.position.set(0,1.22,0.74); beak.rotation.x=Math.PI/2; hero.add(beak);
+  // ---- eyes (glossy black + emissive catchlight) ----
+  const eyeMat = new THREE.MeshStandardMaterial({color:0x02040a, metalness:0.3, roughness:0.05, envMapIntensity:2});
+  const spark = new THREE.MeshBasicMaterial({color:0xffffff});
+  for(const sx of [-1,1]){
+    const e = new THREE.Mesh(new THREE.SphereGeometry(0.15,24,24), eyeMat);
+    e.position.set(0.3*sx,1.4,0.56); hero.add(e);
+    const cg = new THREE.Mesh(new THREE.SphereGeometry(0.04,12,12), spark);
+    cg.position.set(0.3*sx+0.05,1.46,0.68); hero.add(cg);
+    // cyber eye-ring accent
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.19,0.02,10,32), holoMat);
+    ring.position.set(0.3*sx,1.4,0.5); hero.add(ring); accentParts.push(ring);
+  }
+  // ---- iridescent chest plate ----
+  const chest = new THREE.Mesh(ellip(0.7,0.85,0.45,40), makeIrid());
+  chest.position.set(0,0.25,0.6); chest.scale.setScalar(0.98); hero.add(chest); accentParts.push(chest);
+  // ---- cheek blush (rufous titmouse flanks) as iridescent patches ----
+  for(const sx of [-1,1]){
+    const p = new THREE.Mesh(ellip(0.2,0.28,0.1,24), makeIrid());
+    p.position.set(0.62*sx,0.35,0.42); hero.add(p); accentParts.push(p);
+  }
+  // ---- wings (swept, raised — mid burst) ----
+  function wing(sx){
+    const g = ellip(0.16,0.7,1.0,32); const w = new THREE.Mesh(g, bodyMat);
+    w.position.set(0.95*sx,0.35,-0.1); w.rotation.z = sx*0.5; w.rotation.y = sx*0.5; w.rotation.x=0.3;
+    hero.add(w); bodyParts.push(w);
+    // wing feather tips = iridescent
+    for(let i=0;i<3;i++){ const f=new THREE.Mesh(new THREE.ConeGeometry(0.1,0.6,10), makeIrid());
+      f.position.set(1.15*sx,-0.1-i*0.18,-0.5-i*0.15); f.rotation.z=sx*1.2; f.rotation.x=1.1;
+      hero.add(f); accentParts.push(f); }
+  }
+  wing(-1); wing(1);
+  // ---- tail (flat swept fan) ----
+  const tail = new THREE.Mesh(ellip(0.5,0.12,0.9,32), bodyMat);
+  tail.position.set(0,-0.5,-0.8); tail.rotation.x=-0.6; hero.add(tail); bodyParts.push(tail);
+
+  // ---- fur tuft on the crown (shell fur showcase) ----
+  buildFur(head);
+  hero.position.y = 0.15;
+  hero.rotation.y = -0.5;          // default 3/4 view so the beak reads in profile
+}
+
+/* shell fur: N nested copies of a cap mesh, driven by uLayer per shell */
+const furShells = [];
+function buildFur(head){
+  const cap = new THREE.SphereGeometry(0.6, 40, 24, 0, Math.PI*2, 0, Math.PI*0.55);
+  const N = 16;
+  for(let i=0;i<N;i++){
+    const m = furMaterial(new THREE.Color(0x8fb6ff));
+    const mesh = new THREE.Mesh(cap, m);
+    mesh.position.copy(head.position); mesh.renderOrder = 2+i;
+    mesh.userData.layer = i/(N-1);
+    hero.add(mesh); furShells.push(mesh);
+  }
+}
+
+buildHero();
+
+/* apply a finish to the swappable body parts */
+let currentFinish='chrome';
+function applyFinish(v){
+  currentFinish=v;
+  let m;
+  if(v==='chrome') m = makeChrome();
+  else if(v==='irid') m = makeIrid();
+  else m = holoMat;
+  bodyParts.forEach(p=>p.material = m);
+  bodyMat = m;
+}
+
+/* ============================ WATER ============================ */
+function waterNormals(){
+  const c=document.createElement('canvas'); c.width=c.height=512; const x=c.getContext('2d');
+  const img=x.createImageData(512,512); const d=img.data;
+  for(let i=0;i<512*512;i++){ // cheap smooth-ish noise -> normal-ish
+    const n = 128 + Math.sin(i*0.021)*40 + Math.cos(i*0.013)*40 + (Math.random()*30-15);
+    d[i*4]=140; d[i*4+1]=140; d[i*4+2]=Math.max(200,n); d[i*4+3]=255;
+  }
+  x.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; return t;
+}
+const waterGeo = new THREE.PlaneGeometry(400,400);
+const water = new Water(waterGeo,{
+  textureWidth:512, textureHeight:512,
+  waterNormals: (()=>{ const t=waterNormals(); return t; })(),
+  sunDirection:new THREE.Vector3(0.3,0.6,-0.4).normalize(),
+  sunColor:0xffe6c0, waterColor:0x102138, distortionScale:2.6, fog:false
+});
+water.rotation.x = -Math.PI/2; water.position.y = -0.55; scene.add(water);
+
+/* faint reflection doubling: subtle mirrored ghost of hero handled by Water reflector already */
+
+/* ---------- splash particles rising at the waterline ---------- */
+const SPN = 260;
+const splashGeo = new THREE.BufferGeometry();
+const sp = new Float32Array(SPN*3), spv = new Float32Array(SPN*3), spl = new Float32Array(SPN);
+function seedDrop(i,init){
+  const a=Math.random()*Math.PI*2, r=0.6+Math.random()*1.1;
+  sp[i*3]=Math.cos(a)*r; sp[i*3+1]=water.position.y + (init?Math.random()*2:0); sp[i*3+2]=Math.sin(a)*r*0.8;
+  spv[i*3]=Math.cos(a)*0.01; spv[i*3+1]=0.02+Math.random()*0.05; spv[i*3+2]=Math.sin(a)*0.01;
+  spl[i]=0;
+}
+for(let i=0;i<SPN;i++) seedDrop(i,true);
+splashGeo.setAttribute('position', new THREE.BufferAttribute(sp,3));
+function dropTex(){ const c=document.createElement('canvas'); c.width=c.height=64; const x=c.getContext('2d');
+  const g=x.createRadialGradient(32,32,0,32,32,32); g.addColorStop(0,'#eaffff'); g.addColorStop(0.4,'#8fd6ff'); g.addColorStop(1,'#8fd6ff00');
+  x.fillStyle=g; x.beginPath(); x.arc(32,32,32,0,7); x.fill(); return new THREE.CanvasTexture(c); }
+const splash = new THREE.Points(splashGeo, new THREE.PointsMaterial({
+  size:0.14, map:dropTex(), transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, color:0xbfefff }));
+scene.add(splash);
+
+/* ---------- floating dust motes for depth ---------- */
+const DN=180; const dg=new THREE.BufferGeometry(); const dp=new Float32Array(DN*3);
+for(let i=0;i<DN;i++){ dp[i*3]=(Math.random()-0.5)*10; dp[i*3+1]=Math.random()*5-1; dp[i*3+2]=(Math.random()-0.5)*8; }
+dg.setAttribute('position',new THREE.BufferAttribute(dp,3));
+const dust=new THREE.Points(dg,new THREE.PointsMaterial({size:0.03,color:0x9fd8ff,transparent:true,opacity:0.5,depthWrite:false,blending:THREE.AdditiveBlending}));
+scene.add(dust);
+
+/* ======================= POST PROCESSING ======================= */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 0.62, 0.6, 0.85);
+composer.addPass(bloom);
+
+// custom final pass: chromatic aberration + vignette + scanlines + grain
+const CRT = {
+  uniforms:{ tDiffuse:{value:null}, uAmt:{value:0.5}, uScan:{value:1}, uTime:{value:0}, uRes:{value:new THREE.Vector2(innerWidth,innerHeight)} },
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+  fragmentShader:`
+    uniform sampler2D tDiffuse; uniform float uAmt; uniform float uScan; uniform float uTime; uniform vec2 uRes;
+    varying vec2 vUv;
+    void main(){
+      vec2 d = vUv-0.5; float r2=dot(d,d);
+      float ca = uAmt*0.004*(0.4+r2*2.0);
+      vec3 col;
+      col.r = texture2D(tDiffuse, vUv + d*ca).r;
+      col.g = texture2D(tDiffuse, vUv).g;
+      col.b = texture2D(tDiffuse, vUv - d*ca).b;
+      float scan = 1.0 - uScan*0.10*abs(sin(vUv.y*uRes.y*1.6));   // fine scanlines
+      col *= scan;
+      float vig = smoothstep(0.95,0.25,r2*1.5);                    // vignette
+      col *= mix(1.0,vig, 0.55);
+      float g = fract(sin(dot(vUv*uTime, vec2(12.9898,78.233)))*43758.5453);
+      col += (g-0.5)*0.03;                                         // grain
+      gl_FragColor = vec4(col,1.0);
+    }`
+};
+const crtPass = new ShaderPass(CRT); crtPass.renderToScreen=true; composer.addPass(crtPass);
+
+/* ============================ 2D OVERLAY ============================ */
+const oCanvas = document.getElementById('overlay');
+const octx = oCanvas.getContext('2d');
+let showOverlay = true;
+
+function chromeText(ctx, text, x, y, size, opts={}){
+  ctx.save();
+  ctx.font = `900 ${size}px Orbitron, sans-serif`;
+  ctx.textAlign = opts.align||'left'; ctx.textBaseline='alphabetic';
+  const skew = opts.skew ?? -0.16;
+  ctx.transform(1,0,skew,1,x,y);           // italic shear
+  // outer glow / drop
+  ctx.shadowColor = opts.glow||'#39e6ff'; ctx.shadowBlur = size*0.5;
+  ctx.fillStyle = '#0a1226'; ctx.fillText(text,4,6);
+  ctx.shadowBlur = 0;
+  // chrome gradient fill
+  const g = ctx.createLinearGradient(0,y-size,0,y+size*0.2);
+  g.addColorStop(0,'#ffffff'); g.addColorStop(0.34,'#bfe3ff'); g.addColorStop(0.5,'#2b70ff');
+  g.addColorStop(0.52,'#0b2f8a'); g.addColorStop(0.66,'#6fb0ff'); g.addColorStop(1,'#eaf6ff');
+  ctx.fillStyle=g; ctx.fillText(text,0,0);
+  // bevel highlight + dark edge
+  ctx.lineWidth = Math.max(1,size*0.02); ctx.strokeStyle='#08132e'; ctx.strokeText(text,0,0);
+  ctx.lineWidth = Math.max(1,size*0.012); ctx.strokeStyle='#eaffff'; ctx.strokeText(text,-1,-1.5);
+  ctx.restore();
+}
+function badge(ctx,text,x,y,w,h,hue){
+  ctx.save();
+  ctx.transform(1,0,-0.14,1,x,y);
+  const g=ctx.createLinearGradient(0,0,0,h);
+  g.addColorStop(0,hue[0]); g.addColorStop(1,hue[1]);
+  ctx.shadowColor=hue[0]; ctx.shadowBlur=14;
+  roundRect(ctx,0,0,w,h,h*0.28); ctx.fillStyle=g; ctx.fill();
+  ctx.shadowBlur=0; ctx.lineWidth=1.5; ctx.strokeStyle='#ffffffcc'; ctx.stroke();
+  ctx.fillStyle='#04101f'; ctx.font=`700 ${h*0.5}px Rajdhani, sans-serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(text, w/2, h/2+1);
+  ctx.restore();
+}
+function roundRect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function starburst(ctx,cx,cy,r,text){
+  ctx.save(); ctx.translate(cx,cy); ctx.rotate(-0.15);
+  const spikes=16; ctx.beginPath();
+  for(let i=0;i<spikes*2;i++){ const rr=i%2? r*0.72:r; const a=i/(spikes*2)*Math.PI*2;
+    ctx.lineTo(Math.cos(a)*rr, Math.sin(a)*rr); } ctx.closePath();
+  const g=ctx.createRadialGradient(0,0,0,0,0,r); g.addColorStop(0,'#fff3a0'); g.addColorStop(0.6,'#ffcc33'); g.addColorStop(1,'#ff7a1a');
+  ctx.shadowColor='#ffcc33'; ctx.shadowBlur=24; ctx.fillStyle=g; ctx.fill();
+  ctx.shadowBlur=0; ctx.lineWidth=3; ctx.strokeStyle='#7a2e00'; ctx.stroke();
+  ctx.fillStyle='#7a1500'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  const lines=text.split('\n'); const fs=r*0.34;
+  ctx.font=`900 ${fs}px Orbitron, sans-serif`;
+  lines.forEach((l,i)=> ctx.fillText(l, 0, (i-(lines.length-1)/2)*fs*1.02));
+  ctx.restore();
+}
+
+function drawOverlay(ctx,w,h){
+  ctx.clearRect(0,0,w,h);
+  if(!showOverlay) return;
+  const s = w/1280;                     // scale factor from 1280 baseline
+  // top gradient scrim for text legibility
+  let sc=ctx.createLinearGradient(0,0,0,h); sc.addColorStop(0,'#04060dCC'); sc.addColorStop(0.16,'#04060d00');
+  sc.addColorStop(0.8,'#04060d00'); sc.addColorStop(1,'#04060dEE'); ctx.fillStyle=sc; ctx.fillRect(0,0,w,h);
+
+  // brand wordmark (top-left, big)
+  chromeText(ctx, COPY.brand, 40*s, 90*s, 62*s, {glow:'#39e6ff'});
+  // model badge under brand
+  ctx.save(); ctx.transform(1,0,-0.14,1,44*s,120*s);
+  ctx.font=`700 ${22*s}px Michroma, sans-serif`; ctx.fillStyle='#9fe9ff';
+  ctx.shadowColor='#39e6ff'; ctx.shadowBlur=10*s; ctx.fillText(COPY.model,0,0); ctx.restore();
+
+  // spec badges column (top-right)
+  const bw=190*s, bh=34*s; let by=44*s;
+  const hues=[['#3df0ff','#0b6fff'],['#ff2fd0','#7a0f8a'],['#8dff5a','#0f8a3a'],['#ffd23d','#c06a00'],['#c98dff','#5a1fb0'],['#5affff','#0b8a8a']];
+  COPY.badges.forEach((b,i)=>{ badge(ctx,b, w-bw-40*s, by, bw, bh, hues[i%hues.length]); by+=bh+12*s; });
+
+  // starburst (mid-right)
+  starburst(ctx, w-150*s, h*0.62, 96*s, COPY.starburst);
+
+  // tagline band (bottom)
+  chromeText(ctx, COPY.tagline, 40*s, h-90*s, 40*s, {glow:'#ff2fd0'});
+
+  // bottom spec bar
+  ctx.save();
+  const barH=42*s; roundRect(ctx,30*s,h-58*s,w-60*s,barH,8*s);
+  const bg=ctx.createLinearGradient(0,h-58*s,0,h-58*s+barH); bg.addColorStop(0,'#0e1830EE'); bg.addColorStop(1,'#060a14EE');
+  ctx.fillStyle=bg; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle='#2a3a66'; ctx.stroke();
+  ctx.font=`600 ${17*s}px 'Chakra Petch', sans-serif`; ctx.textBaseline='middle';
+  ctx.fillStyle='#7fe9ff'; ctx.textAlign='left'; ctx.fillText(COPY.footL, 48*s, h-58*s+barH/2);
+  ctx.fillStyle='#ff8fe0'; ctx.textAlign='right'; ctx.fillText(COPY.footR, w-48*s, h-58*s+barH/2);
+  ctx.restore();
+
+  // thin spec ticker just above bar
+  ctx.save(); ctx.font=`600 ${13*s}px 'Rajdhani', sans-serif`; ctx.fillStyle='#5f74a0';
+  ctx.textAlign='center'; ctx.fillText(COPY.spec, w/2, h-74*s); ctx.restore();
+
+  // corner registration marks (print vibe)
+  ctx.strokeStyle='#39e6ff88'; ctx.lineWidth=1.5;
+  [[24,24],[w-24,24],[24,h-24],[w-24,h-24]].forEach(([x,y])=>{ ctx.beginPath();
+    ctx.moveTo(x-8*s,y); ctx.lineTo(x+8*s,y); ctx.moveTo(x,y-8*s); ctx.lineTo(x,y+8*s); ctx.stroke(); });
+}
+
+/* ============================ RESIZE ============================ */
+function resize(){
+  const w=innerWidth,h=innerHeight;
+  renderer.setSize(w,h); composer.setSize(w,h);
+  camera.aspect=w/h; camera.updateProjectionMatrix();
+  crtPass.uniforms.uRes.value.set(w*renderer.getPixelRatio(), h*renderer.getPixelRatio());
+  oCanvas.width=w*devicePixelRatio; oCanvas.height=h*devicePixelRatio;
+  oCanvas.style.width=w+'px'; oCanvas.style.height=h+'px';
+  octx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  drawOverlay(octx,w,h);
+}
+addEventListener('resize', resize);
+
+/* ============================ LOOP ============================ */
+let spinAmt=0.25, tPrev=performance.now();
+const clock = new THREE.Clock();
+function tick(){
+  requestAnimationFrame(tick);
+  const t = clock.getElapsedTime();
+  controls.update();
+  hero.rotation.y += spinAmt*0.004;
+  hero.position.y = 0.15 + Math.sin(t*1.1)*0.05;                 // gentle bob
+  holoMat.uniforms.uTime.value = t;
+  water.material.uniforms['time'].value += 1/60;
+  crtPass.uniforms.uTime.value = t;
+
+  // fur shells follow head + wind
+  furShells.forEach(m=>{ if(m.material.userData.sh){ m.material.userData.sh.uniforms.uLayer.value=m.userData.layer;
+    m.material.userData.sh.uniforms.uTime.value=t; }
+    m.position.copy(hero.children[1].position).applyEuler(new THREE.Euler(0,hero.rotation.y,0));
+    m.rotation.y = hero.rotation.y; });
+
+  // splash physics
+  for(let i=0;i<SPN;i++){ sp[i*3]+=spv[i*3]; sp[i*3+1]+=spv[i*3+1]; sp[i*3+2]+=spv[i*3+2];
+    spv[i*3+1]-=0.0012; if(sp[i*3+1] > water.position.y+2.4 || spv[i*3+1]<-0.02) seedDrop(i,false); }
+  splashGeo.attributes.position.needsUpdate=true;
+  // dust drift
+  for(let i=0;i<DN;i++){ dp[i*3+1]+=0.0015; if(dp[i*3+1]>4) dp[i*3+1]=-1; }
+  dg.attributes.position.needsUpdate=true;
+
+  composer.render();
+}
+
+/* ============================ EXPORT ============================ */
+async function exportPNG(width=3840){
+  const aspect = innerWidth/innerHeight;
+  const height = Math.round(width/aspect);
+  // render 3D at high res
+  const oldPR = renderer.getPixelRatio();
+  renderer.setPixelRatio(1);
+  renderer.setSize(width,height,false); composer.setSize(width,height);
+  camera.aspect=aspect; camera.updateProjectionMatrix();
+  crtPass.uniforms.uRes.value.set(width,height);
+  composer.render();
+
+  // composite: 3D + 2D overlay onto one canvas
+  const out=document.createElement('canvas'); out.width=width; out.height=height;
+  const ox=out.getContext('2d');
+  ox.drawImage(glCanvas,0,0,width,height);
+  const ov=document.createElement('canvas'); ov.width=width; ov.height=height;
+  drawOverlay(ov.getContext('2d'), width, height);
+  ox.drawImage(ov,0,0);
+
+  const a=document.createElement('a');
+  a.download=`titmouse-boxart-${width}x${height}.png`;
+  a.href=out.toDataURL('image/png'); a.click();
+
+  // restore
+  renderer.setPixelRatio(oldPR); resize();
+}
+
+/* ============================ UI WIRING ============================ */
+function seg(id, cb){ const box=document.getElementById(id);
+  box.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return;
+    [...box.children].forEach(c=>c.classList.remove('on')); b.classList.add('on'); cb(b.dataset.v); }); }
+seg('finish', applyFinish);
+seg('backdrop', setEnv);
+document.getElementById('bloom').oninput = e=> bloom.strength = +e.target.value;
+document.getElementById('fx').oninput = e=> crtPass.uniforms.uAmt.value = +e.target.value;
+document.getElementById('spin').oninput = e=> spinAmt = +e.target.value;
+document.getElementById('water').oninput = e=> water.position.y = +e.target.value;
+document.getElementById('export').onclick = ()=> exportPNG(3840);
+document.getElementById('clean').onclick = ()=>{ const was=showOverlay; showOverlay=false; drawOverlay(octx,innerWidth,innerHeight); exportPNG(3840).then(()=>{ showOverlay=was; drawOverlay(octx,innerWidth,innerHeight); }); };
+const tO=document.getElementById('toggleOverlay');
+tO.onclick=()=>{ showOverlay=!showOverlay; tO.textContent=showOverlay?'ON':'OFF'; tO.style.opacity=showOverlay?1:0.5; drawOverlay(octx,innerWidth,innerHeight); };
+const tS=document.getElementById('toggleScan');
+tS.onclick=()=>{ const on=crtPass.uniforms.uScan.value>0.5; crtPass.uniforms.uScan.value=on?0:1; tS.textContent=on?'OFF':'ON'; tS.style.opacity=on?0.5:1; };
+addEventListener('keydown',e=>{ if(e.key==='h'||e.key==='H'){ const p=document.getElementById('panel'); p.style.display=p.style.display==='none'?'block':'none'; }
+  if(e.key==='e'||e.key==='E') exportPNG(3840); });
+
+/* ============================ BOOT ============================ */
+async function boot(){
+  try{ await document.fonts.load('900 40px Orbitron'); await document.fonts.load('700 20px Michroma');
+       await document.fonts.load('600 16px "Chakra Petch"'); await document.fonts.ready; }catch(e){}
+  setEnv('void');
+  spinAmt = 0.25;
+  resize();
+  tick();
+  document.getElementById('loading').style.display='none';
+}
+boot();
+</script>
+</body>
+</html>
