@@ -437,6 +437,13 @@ struct TutorialTip;
 #[derive(Component)]
 struct TutorialTipText;
 
+/// The always-available hand-rankings reference: a button in the bottom-right
+/// corner that toggles a pop-up panel showing each hand with example cards.
+#[derive(Component)]
+struct CheatSheetToggle;
+#[derive(Component)]
+struct CheatSheetPopup;
+
 /// The two independently-controllable audio channels in the options menu.
 #[derive(Clone, Copy, PartialEq)]
 enum VolKind {
@@ -665,7 +672,7 @@ fn main() {
             blind_clock,
         ),
     )
-    .add_systems(Update, (title_buttons, tutorial_system));
+    .add_systems(Update, (title_buttons, tutorial_system, cheat_sheet_toggle));
 
     if let Ok(path) = env::var("SCREENSHOT") {
         app.insert_resource(ShotState { path, frame: 0 })
@@ -2465,6 +2472,117 @@ fn setup(
                     TutorialTipText,
                 ));
             });
+        });
+
+    // --- hand-rankings cheat sheet: a clickable pop-up in the bottom-right ---
+    // Each ranking gets a row of example card images so you can see the shape of
+    // the hand, not just read its name. Hidden until the toggle button is clicked.
+    let rankings: [(&str, &[&str]); 9] = [
+        ("Straight Flush", &["9s", "8s", "7s", "6s", "5s"]),
+        ("Four of a Kind", &["9c", "9d", "9h", "9s"]),
+        ("Full House", &["9s", "9d", "9h", "5c", "5s"]),
+        ("Flush", &["As", "Js", "8s", "5s", "3s"]),
+        ("Straight", &["9s", "8d", "7h", "6c", "5s"]),
+        ("Three of a Kind", &["9s", "9d", "9h"]),
+        ("Two Pair", &["9s", "9d", "5h", "5c"]),
+        ("Pair", &["9s", "9d"]),
+        ("High Card", &["Ac", "Kd"]),
+    ];
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(12.0),
+                bottom: Val::Px(54.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(12.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.92)),
+            BorderColor::all(Color::srgba(0.85, 0.72, 0.35, 0.75)),
+            if env::var("SHOW_CHEAT").is_ok() {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            },
+            GlobalZIndex(60),
+            CheatSheetPopup,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new("HAND RANKINGS  (best to worst)"),
+                TextFont {
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.85, 0.4)),
+            ));
+            for (name, cards) in rankings {
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(2.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    row.spawn((
+                        Text::new(name),
+                        TextFont {
+                            font_size: 13.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.92, 0.92, 0.88)),
+                    ));
+                    row.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(3.0),
+                        ..default()
+                    })
+                    .with_children(|hand| {
+                        for code in cards.iter() {
+                            hand.spawn((
+                                Node {
+                                    width: Val::Px(28.0),
+                                    height: Val::Px(39.0),
+                                    ..default()
+                                },
+                                ImageNode {
+                                    image: asset_server.load(format!("cards/{code}.png")),
+                                    ..default()
+                                },
+                            ));
+                        }
+                    });
+                });
+            }
+        });
+    // The little clickable button that opens/closes the cheat sheet.
+    commands
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(12.0),
+                bottom: Val::Px(12.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.12, 0.22, 0.14, 0.92)),
+            BorderColor::all(Color::srgb(0.85, 0.72, 0.35)),
+            GlobalZIndex(60),
+            CheatSheetToggle,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new("Hand Guide"),
+                TextFont {
+                    font_size: 16.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.9, 0.55)),
+            ));
         });
 
     // --- pause menu overlay (toggle with Enter); audio options inside ---
@@ -4755,6 +4873,48 @@ fn title_buttons(
             }
             Interaction::Hovered => *bg = BackgroundColor(Color::srgb(0.26, 0.5, 0.32)),
             Interaction::None => *bg = BackgroundColor(Color::srgb(0.2, 0.42, 0.26)),
+        }
+    }
+}
+
+/// The bottom-right "Hands" button opens/closes the hand-rankings pop-up. The
+/// button and pop-up are hidden entirely on the title screen.
+fn cheat_sheet_toggle(
+    ui: Res<AppUi>,
+    mut prev: Local<bool>,
+    mut btn: Query<
+        (&Interaction, &mut BackgroundColor, &mut Visibility),
+        (With<CheatSheetToggle>, Without<CheatSheetPopup>),
+    >,
+    mut popup: Query<&mut Visibility, (With<CheatSheetPopup>, Without<CheatSheetToggle>)>,
+) {
+    for (interaction, mut bg, mut vis) in &mut btn {
+        *vis = if ui.on_title {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
+        let pressed = *interaction == Interaction::Pressed;
+        if pressed && !*prev && !ui.on_title {
+            for mut pv in &mut popup {
+                *pv = if *pv == Visibility::Visible {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Visible
+                };
+            }
+        }
+        *prev = pressed;
+        *bg = match *interaction {
+            Interaction::Pressed => BackgroundColor(Color::srgb(0.18, 0.35, 0.22)),
+            Interaction::Hovered => BackgroundColor(Color::srgb(0.16, 0.3, 0.19)),
+            Interaction::None => BackgroundColor(Color::srgba(0.12, 0.22, 0.14, 0.92)),
+        };
+    }
+    // Keep the pop-up closed whenever we're on the title screen.
+    if ui.on_title {
+        for mut pv in &mut popup {
+            *pv = Visibility::Hidden;
         }
     }
 }
