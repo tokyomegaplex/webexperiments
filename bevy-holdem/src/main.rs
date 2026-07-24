@@ -178,11 +178,48 @@ struct SliderFill;
 struct SliderHandle;
 
 /// A drifting cigarette-smoke puff: rises, sways, grows and fades on a loop.
+/// If `cig` is set, the puff rises from that cigarette's ember (following it as
+/// it's picked up); `local` is then the offset along the cigarette's own axis.
 #[derive(Component)]
 struct Smoke {
-    origin: Vec3,
+    cig: Option<usize>,
+    local: Vec3,
     phase: f32,
     speed: f32,
+}
+
+/// Where an interactive cigarette is in its click-to-smoke animation.
+#[derive(Clone, Copy, PartialEq)]
+enum CigState {
+    Resting,
+    Lifting,
+    Dragging,
+    Returning,
+}
+
+/// One interactive cigarette on the ashtray. Click it to raise it to your mouth
+/// for a drag (the ember flares), then it lowers itself back onto the rim.
+/// `cigarette_system` animates `pos`/`rot`; `CigPart`s follow that pose.
+struct CigData {
+    rest_pos: Vec3,
+    rest_rot: Quat,
+    ember_mat: Handle<StandardMaterial>,
+    state: CigState,
+    t: f32,    // 0..1 progress through the lift / return
+    hold: f32, // seconds left held at the mouth
+    pos: Vec3,
+    rot: Quat,
+}
+
+#[derive(Resource, Default)]
+struct Cigarettes(Vec<CigData>);
+
+/// A visual piece (paper / filter / ember) of cigarette `cig`, offset from the
+/// cigarette's axis by `local`.
+#[derive(Component)]
+struct CigPart {
+    cig: usize,
+    local: Vec3,
 }
 
 /// Tags an entity that is spawned from the poker engine state and re-created
@@ -622,6 +659,7 @@ fn main() {
             .unwrap_or(1),
     ))
     .init_resource::<CardFaces>()
+    .init_resource::<Cigarettes>()
     .add_systems(Startup, setup)
     .add_systems(
         Update,
@@ -672,7 +710,10 @@ fn main() {
             blind_clock,
         ),
     )
-    .add_systems(Update, (title_buttons, tutorial_system, cheat_sheet_toggle));
+    .add_systems(
+        Update,
+        (title_buttons, tutorial_system, cheat_sheet_toggle, cigarette_system),
+    );
 
     if let Ok(path) = env::var("SCREENSHOT") {
         app.insert_resource(ShotState { path, frame: 0 })
@@ -809,6 +850,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
     poker: Res<Poker>,
+    mut cigs: ResMut<Cigarettes>,
 ) {
     // Oval table dimensions (x radius, z radius), felt surface height, floor.
     let rx = 5.4_f32;
@@ -2770,11 +2812,6 @@ fn setup(
         perceptual_roughness: 0.9,
         ..default()
     });
-    let cig_ember = materials.add(StandardMaterial {
-        base_color: Color::srgb_u8(80, 30, 12),
-        emissive: LinearRgba::rgb(1.2, 0.35, 0.05),
-        ..default()
-    });
     let cig_mesh = meshes.add(Cylinder::new(0.028, 0.62));
     let smoke_tex = asset_server.load("smoke.png");
     let smoke_quad = meshes.add(Rectangle::new(1.0, 1.0));
@@ -2782,7 +2819,13 @@ fn setup(
     // rim: the filter end sits on the felt outside, the body touches the top of
     // the rim at its crossing point, and the lit end angles up over the dish —
     // so nothing passes through the rim or the dish.
-    for (theta, tilt) in [(2.35_f32, 0.30_f32), (-0.65, 0.34)] {
+    // Each cigarette is described in its own local frame (long axis = +Y): the
+    // paper centred at the origin, the filter below, the ember above. A pose
+    // (pos, rot) places that frame on the rim; `cigarette_system` animates the
+    // pose when you click to take a drag, and every `CigPart` follows it.
+    let grab = env::var("GRAB_CIG").is_ok();
+    for (idx, (theta, tilt)) in [(2.35_f32, 0.30_f32), (-0.65, 0.34)].iter().enumerate() {
+        let (theta, tilt) = (*theta, *tilt);
         // Contact point: on top of the rim (torus top + cig radius).
         let contact = Vec3::new(
             ash_x + theta.cos() * 0.4,
@@ -2795,33 +2838,49 @@ fn setup(
             tilt.sin(),
             -theta.sin() * tilt.cos(),
         );
-        let rot = Quat::from_rotation_arc(Vec3::Y, dir);
+        let rest_rot = Quat::from_rotation_arc(Vec3::Y, dir);
         // Centre sits a little up-axis of the contact, so most of the paper +
         // the filter hang outside, dropping to the felt.
-        let base = contact + dir * 0.12;
+        let rest_pos = contact + dir * 0.12;
+
+        // Local offsets along the cigarette's own +Y axis.
+        let paper_local = Vec3::ZERO;
+        let filter_local = Vec3::new(0.0, -0.36, 0.0);
+        let ember_local = Vec3::new(0.0, 0.33, 0.0);
+        let smoke_local = ember_local + Vec3::new(0.0, 0.03, 0.0);
+
+        let ember_mat = materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(80, 30, 12),
+            emissive: LinearRgba::rgb(1.2, 0.35, 0.05),
+            ..default()
+        });
+
+        // paper
         commands.spawn((
             Mesh3d(cig_mesh.clone()),
             MeshMaterial3d(cig_paper.clone()),
-            Transform::from_translation(base).with_rotation(rot),
+            Transform::from_translation(rest_pos + rest_rot * paper_local).with_rotation(rest_rot),
             NotShadowCaster,
+            CigPart { cig: idx, local: paper_local },
         ));
         // filter end
         commands.spawn((
             Mesh3d(meshes.add(Cylinder::new(0.03, 0.16))),
             MeshMaterial3d(cig_filter.clone()),
-            Transform::from_translation(base - dir * 0.36).with_rotation(rot),
+            Transform::from_translation(rest_pos + rest_rot * filter_local).with_rotation(rest_rot),
             NotShadowCaster,
+            CigPart { cig: idx, local: filter_local },
         ));
         // glowing ember at the far tip
-        let ember = base + dir * 0.33;
         commands.spawn((
             Mesh3d(meshes.add(Cylinder::new(0.028, 0.05))),
-            MeshMaterial3d(cig_ember.clone()),
-            Transform::from_translation(ember).with_rotation(rot),
+            MeshMaterial3d(ember_mat.clone()),
+            Transform::from_translation(rest_pos + rest_rot * ember_local).with_rotation(rest_rot),
             NotShadowCaster,
+            CigPart { cig: idx, local: ember_local },
         ));
-        // a column of drifting smoke puffs rising from the ember (animated)
-        let origin = ember + Vec3::Y * 0.03;
+        // a column of drifting smoke puffs rising from the ember (animated, and
+        // anchored to this cigarette so the smoke follows it when it's raised)
         for p in 0..5 {
             let smat = materials.add(StandardMaterial {
                 base_color: Color::srgba(0.72, 0.76, 0.82, 0.0),
@@ -2835,15 +2894,33 @@ fn setup(
             commands.spawn((
                 Mesh3d(smoke_quad.clone()),
                 MeshMaterial3d(smat),
-                Transform::from_translation(origin),
+                Transform::from_translation(rest_pos + rest_rot * smoke_local),
                 NotShadowCaster,
                 Smoke {
-                    origin,
+                    cig: Some(idx),
+                    local: smoke_local,
                     phase: p as f32 * 0.2 + theta.abs(),
                     speed: 0.22,
                 },
             ));
         }
+
+        // A held-drag start state lets headless screenshots show the raised cig.
+        let (state, hold) = if grab && idx == 0 {
+            (CigState::Dragging, 999.0)
+        } else {
+            (CigState::Resting, 0.0)
+        };
+        cigs.0.push(CigData {
+            rest_pos,
+            rest_rot,
+            ember_mat,
+            state,
+            t: 0.0,
+            hold,
+            pos: rest_pos,
+            rot: rest_rot,
+        });
     }
 }
 
@@ -2851,6 +2928,7 @@ fn setup(
 /// loop, billboarding to face the camera.
 fn smoke_system(
     time: Res<Time>,
+    cigs: Res<Cigarettes>,
     camera: Query<&Transform, (With<Camera3d>, Without<Smoke>)>,
     mut puffs: Query<(&Smoke, &mut Transform, &MeshMaterial3d<StandardMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -2861,10 +2939,16 @@ fn smoke_system(
     let cam_pos = cam.translation;
     let t = time.elapsed_secs();
     for (s, mut tr, mat) in &mut puffs {
+        // Origin follows the anchoring cigarette's ember (in world space) so the
+        // smoke tracks it as it's raised; static puffs just use their `local`.
+        let origin = match s.cig {
+            Some(i) if i < cigs.0.len() => cigs.0[i].pos + cigs.0[i].rot * s.local,
+            _ => s.local,
+        };
         let life = (t * s.speed + s.phase).fract(); // 0..1
         let rise = life * 1.5;
         let sway = (life * 7.0 + s.phase * 6.0).sin() * 0.12 * life;
-        let pos = s.origin + Vec3::new(sway, rise, 0.0);
+        let pos = origin + Vec3::new(sway, rise, 0.0);
         tr.translation = pos;
         // billboard to camera, then size it (growing as it rises)
         let target = Vec3::new(cam_pos.x, pos.y, cam_pos.z);
@@ -2874,6 +2958,137 @@ fn smoke_system(
         let alpha = (life * std::f32::consts::PI).sin() * 0.52;
         if let Some(m) = materials.get_mut(&mat.0) {
             m.base_color = Color::srgba(0.72, 0.76, 0.82, alpha);
+        }
+    }
+}
+
+/// Distance along `ray` to the near surface of a sphere, or None if it misses
+/// (or is entirely behind the ray). Used to click cigarettes in the 3D scene.
+fn ray_sphere(ray: Ray3d, center: Vec3, r: f32) -> Option<f32> {
+    let d = *ray.direction; // Dir3 is unit-length
+    let oc = ray.origin - center;
+    let b = oc.dot(d);
+    let c = oc.dot(oc) - r * r;
+    let disc = b * b - c;
+    if disc < 0.0 {
+        return None;
+    }
+    let s = disc.sqrt();
+    let near = -b - s;
+    let far = -b + s;
+    if near >= 0.0 {
+        Some(near)
+    } else if far >= 0.0 {
+        Some(far) // ray starts inside the sphere
+    } else {
+        None
+    }
+}
+
+/// Click a cigarette to pick it up: it rises to your mouth, the ember flares for
+/// a drag, then it lowers itself back onto the ashtray rim. Poses are animated
+/// here; `CigPart`s and anchored smoke follow along.
+fn cigarette_system(
+    time: Res<Time>,
+    ui: Res<AppUi>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut cigs: ResMut<Cigarettes>,
+    mut parts: Query<(&CigPart, &mut Transform)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let dt = time.delta_secs();
+    let Ok((cam, cam_t)) = camera.single() else {
+        return;
+    };
+
+    // --- click to grab the nearest resting cigarette under the cursor ---
+    if !ui.on_title && !ui.paused && mouse.just_pressed(MouseButton::Left) {
+        if let Some(cursor) = windows.single().ok().and_then(|w| w.cursor_position()) {
+            if let Ok(ray) = cam.viewport_to_world(cam_t, cursor) {
+                let mut best: Option<(usize, f32)> = None;
+                for (i, c) in cigs.0.iter().enumerate() {
+                    if c.state != CigState::Resting {
+                        continue;
+                    }
+                    if let Some(dist) = ray_sphere(ray, c.pos, 0.45) {
+                        if best.map_or(true, |(_, bd)| dist < bd) {
+                            best = Some((i, dist));
+                        }
+                    }
+                }
+                if let Some((i, _)) = best {
+                    cigs.0[i].state = CigState::Lifting;
+                    cigs.0[i].t = 0.0;
+                }
+            }
+        }
+    }
+
+    // --- the "mouth" pose (relative to the camera) where a drag is taken ---
+    let cam_pos = cam_t.translation();
+    let fwd = cam_t.forward().as_vec3();
+    let up = cam_t.up().as_vec3();
+    let right = cam_t.right().as_vec3();
+    let lip = cam_pos + fwd * 1.0 - up * 0.30 + right * 0.14;
+    let drag_dir = (up * 0.78 + right * 0.30 + fwd * 0.14).normalize();
+    let mouth_rot = Quat::from_rotation_arc(Vec3::Y, drag_dir);
+    let mouth_pos = lip + drag_dir * 0.30; // filter ends up near the lip
+
+    // --- advance each cigarette's animation ---
+    for c in &mut cigs.0 {
+        let glow;
+        match c.state {
+            CigState::Resting => {
+                c.pos = c.rest_pos;
+                c.rot = c.rest_rot;
+                glow = 0.0;
+            }
+            CigState::Lifting => {
+                c.t = (c.t + dt / 0.6).min(1.0);
+                let e = c.t * c.t * (3.0 - 2.0 * c.t); // smoothstep
+                c.pos = c.rest_pos.lerp(mouth_pos, e);
+                c.rot = c.rest_rot.slerp(mouth_rot, e);
+                glow = e;
+                if c.t >= 1.0 {
+                    c.state = CigState::Dragging;
+                    c.hold = 1.1;
+                }
+            }
+            CigState::Dragging => {
+                c.pos = mouth_pos;
+                c.rot = mouth_rot;
+                glow = 1.0;
+                c.hold -= dt;
+                if c.hold <= 0.0 {
+                    c.state = CigState::Returning;
+                    c.t = 0.0;
+                }
+            }
+            CigState::Returning => {
+                c.t = (c.t + dt / 0.6).min(1.0);
+                let e = c.t * c.t * (3.0 - 2.0 * c.t);
+                c.pos = mouth_pos.lerp(c.rest_pos, e);
+                c.rot = mouth_rot.slerp(c.rest_rot, e);
+                glow = 1.0 - e;
+                if c.t >= 1.0 {
+                    c.state = CigState::Resting;
+                }
+            }
+        }
+        // Ember flares hotter while the drag is being pulled.
+        if let Some(m) = materials.get_mut(&c.ember_mat) {
+            let k = 1.0 + glow * 1.6;
+            m.emissive = LinearRgba::rgb(1.2 * k, 0.35 * k, 0.05 * k);
+        }
+    }
+
+    // --- place each part at its cigarette's current pose ---
+    for (part, mut tr) in &mut parts {
+        if let Some(c) = cigs.0.get(part.cig) {
+            tr.translation = c.pos + c.rot * part.local;
+            tr.rotation = c.rot;
         }
     }
 }
