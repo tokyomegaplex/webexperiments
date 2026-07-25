@@ -205,11 +205,17 @@ struct CigData {
     rest_rot: Quat,
     ember_mat: Handle<StandardMaterial>,
     state: CigState,
-    t: f32,    // 0..1 progress through the lift / return
-    hold: f32, // seconds left held at the mouth
+    t: f32,     // 0..1 progress through the lift / return
+    hold: f32,  // seconds left held at the mouth
+    hover: f32, // 0..1 hover highlight (eases in/out)
     pos: Vec3,
     rot: Quat,
 }
+
+/// How close a click-ray must pass to a resting cigarette's centre to grab it.
+/// Generous on purpose: the ashtray sits small and far back, so a tight target
+/// made it feel broken. This covers the cigarettes and the tray around them.
+const CIG_PICK_RADIUS: f32 = 0.55;
 
 #[derive(Resource, Default)]
 struct Cigarettes(Vec<CigData>);
@@ -468,8 +474,6 @@ enum TitleBtn {
 
 /// The tutorial overlay pieces (only shown in tutorial mode).
 #[derive(Component)]
-struct TutorialCheatSheet;
-#[derive(Component)]
 struct TutorialTip;
 #[derive(Component)]
 struct TutorialTipText;
@@ -480,6 +484,12 @@ struct TutorialTipText;
 struct CheatSheetToggle;
 #[derive(Component)]
 struct CheatSheetPopup;
+/// Bottom-right button that turns tutorial coaching on/off mid-game, so you
+/// aren't locked out of it by hitting Enter past the title screen.
+#[derive(Component)]
+struct TutorialToggle;
+#[derive(Component)]
+struct TutorialToggleText;
 
 /// The two independently-controllable audio channels in the options menu.
 #[derive(Clone, Copy, PartialEq)]
@@ -2426,56 +2436,8 @@ fn setup(
             ));
         });
 
-    // --- tutorial overlays (shown only in tutorial mode) ---
-    // Hand-ranking cheat sheet on the left.
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(12.0),
-                top: Val::Px(120.0),
-                padding: UiRect::axes(Val::Px(14.0), Val::Px(12.0)),
-                border: UiRect::all(Val::Px(1.5)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.05, 0.06, 0.08, 0.82)),
-            BorderColor::all(Color::srgba(0.85, 0.72, 0.35, 0.7)),
-            Visibility::Hidden,
-            GlobalZIndex(45),
-            TutorialCheatSheet,
-        ))
-        .with_children(|p| {
-            p.spawn((
-                Text::new("HAND RANKINGS  (high → low)"),
-                TextFont {
-                    font_size: 15.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(1.0, 0.85, 0.4)),
-            ));
-            for line in [
-                "Straight Flush  — 5 in a row, one suit",
-                "Four of a Kind  — four matching",
-                "Full House      — three + a pair",
-                "Flush           — 5 of one suit",
-                "Straight        — 5 in a row",
-                "Three of a Kind — three matching",
-                "Two Pair        — two pairs",
-                "Pair            — two matching",
-                "High Card       — none of the above",
-            ] {
-                p.spawn((
-                    Text::new(line),
-                    TextFont {
-                        font_size: 14.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.92, 0.92, 0.88)),
-                ));
-            }
-        });
+    // --- tutorial overlay: the contextual coaching tip ---
+    // (Hand rankings live in the always-available bottom-right Hand Guide.)
     // Contextual coaching tip, a banner across the top under the win banner.
     commands
         .spawn((
@@ -2598,6 +2560,34 @@ fn setup(
                     });
                 });
             }
+        });
+    // Turn coaching tips on/off without going back to the title screen.
+    commands
+        .spawn((
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(132.0),
+                bottom: Val::Px(12.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.12, 0.18, 0.28, 0.92)),
+            BorderColor::all(Color::srgb(0.4, 0.7, 0.95)),
+            GlobalZIndex(60),
+            TutorialToggle,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new("Tutorial: off"),
+                TextFont {
+                    font_size: 16.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.85, 0.95, 1.0)),
+                TutorialToggleText,
+            ));
         });
     // The little clickable button that opens/closes the cheat sheet.
     commands
@@ -2918,6 +2908,7 @@ fn setup(
             state,
             t: 0.0,
             hold,
+            hover: 0.0,
             pos: rest_pos,
             rot: rest_rot,
         });
@@ -3003,8 +2994,9 @@ fn cigarette_system(
         return;
     };
 
-    // --- click to grab the nearest resting cigarette under the cursor ---
-    if !ui.on_title && !ui.paused && mouse.just_pressed(MouseButton::Left) {
+    // --- what's under the cursor? (drives both the hover glow and the click) ---
+    let mut under_cursor: Option<usize> = None;
+    if !ui.on_title && !ui.paused {
         if let Some(cursor) = windows.single().ok().and_then(|w| w.cursor_position()) {
             if let Ok(ray) = cam.viewport_to_world(cam_t, cursor) {
                 let mut best: Option<(usize, f32)> = None;
@@ -3012,18 +3004,27 @@ fn cigarette_system(
                     if c.state != CigState::Resting {
                         continue;
                     }
-                    if let Some(dist) = ray_sphere(ray, c.pos, 0.45) {
+                    if let Some(dist) = ray_sphere(ray, c.pos, CIG_PICK_RADIUS) {
                         if best.map_or(true, |(_, bd)| dist < bd) {
                             best = Some((i, dist));
                         }
                     }
                 }
-                if let Some((i, _)) = best {
-                    cigs.0[i].state = CigState::Lifting;
-                    cigs.0[i].t = 0.0;
-                }
+                under_cursor = best.map(|(i, _)| i);
             }
         }
+    }
+    if let Some(i) = under_cursor {
+        if mouse.just_pressed(MouseButton::Left) {
+            cigs.0[i].state = CigState::Lifting;
+            cigs.0[i].t = 0.0;
+        }
+    }
+    // Ease the hover highlight in on the hovered cigarette, out on the others.
+    for (i, c) in cigs.0.iter_mut().enumerate() {
+        let want = if under_cursor == Some(i) { 1.0 } else { 0.0 };
+        let rate = dt / 0.12;
+        c.hover += (want - c.hover).clamp(-rate, rate);
     }
 
     // --- the "mouth" pose (relative to the camera) where a drag is taken ---
@@ -3041,9 +3042,11 @@ fn cigarette_system(
         let glow;
         match c.state {
             CigState::Resting => {
-                c.pos = c.rest_pos;
+                // Hovering nudges it up off the rim and warms the ember, so it
+                // reads as "you can click this" before you commit to a click.
+                c.pos = c.rest_pos + Vec3::Y * 0.06 * c.hover;
                 c.rot = c.rest_rot;
-                glow = 0.0;
+                glow = c.hover * 0.55;
             }
             CigState::Lifting => {
                 c.t = (c.t + dt / 0.6).min(1.0);
@@ -5096,13 +5099,47 @@ fn title_buttons(
 /// button and pop-up are hidden entirely on the title screen.
 fn cheat_sheet_toggle(
     ui: Res<AppUi>,
+    mut tut: ResMut<Tutorial>,
     mut prev: Local<bool>,
+    mut prev_tut: Local<bool>,
     mut btn: Query<
         (&Interaction, &mut BackgroundColor, &mut Visibility),
         (With<CheatSheetToggle>, Without<CheatSheetPopup>),
     >,
     mut popup: Query<&mut Visibility, (With<CheatSheetPopup>, Without<CheatSheetToggle>)>,
+    mut tut_btn: Query<
+        (&Interaction, &mut BackgroundColor, &mut Visibility),
+        (
+            With<TutorialToggle>,
+            Without<CheatSheetToggle>,
+            Without<CheatSheetPopup>,
+        ),
+    >,
+    mut tut_text: Query<&mut Text, With<TutorialToggleText>>,
 ) {
+    // --- the in-game "Tutorial: on/off" switch ---
+    for (interaction, mut bg, mut vis) in &mut tut_btn {
+        *vis = if ui.on_title {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
+        let pressed = *interaction == Interaction::Pressed;
+        if pressed && !*prev_tut && !ui.on_title {
+            tut.0 = !tut.0;
+        }
+        *prev_tut = pressed;
+        *bg = match (*interaction, tut.0) {
+            (Interaction::Pressed, _) => BackgroundColor(Color::srgb(0.2, 0.42, 0.62)),
+            (Interaction::Hovered, _) => BackgroundColor(Color::srgb(0.18, 0.3, 0.45)),
+            (Interaction::None, true) => BackgroundColor(Color::srgba(0.16, 0.34, 0.5, 0.95)),
+            (Interaction::None, false) => BackgroundColor(Color::srgba(0.12, 0.18, 0.28, 0.92)),
+        };
+    }
+    for mut t in &mut tut_text {
+        *t = Text::new(if tut.0 { "Tutorial: on" } else { "Tutorial: off" });
+    }
+
     for (interaction, mut bg, mut vis) in &mut btn {
         *vis = if ui.on_title {
             Visibility::Hidden
@@ -5134,13 +5171,12 @@ fn cheat_sheet_toggle(
     }
 }
 
-/// Show/update the tutorial cheat sheet and contextual coaching tip.
+/// Show/update the contextual coaching tip while tutorial mode is on.
 fn tutorial_system(
     tut: Res<Tutorial>,
     ui: Res<AppUi>,
     poker: Res<Poker>,
-    mut sheet: Query<&mut Visibility, (With<TutorialCheatSheet>, Without<TutorialTip>)>,
-    mut tip: Query<&mut Visibility, (With<TutorialTip>, Without<TutorialCheatSheet>)>,
+    mut tip: Query<&mut Visibility, With<TutorialTip>>,
     mut tip_text: Query<&mut Text, With<TutorialTipText>>,
 ) {
     let show = tut.0 && !ui.on_title && !ui.paused;
@@ -5149,9 +5185,6 @@ fn tutorial_system(
     } else {
         Visibility::Hidden
     };
-    for mut v in &mut sheet {
-        *v = vis;
-    }
     for mut v in &mut tip {
         *v = vis;
     }
