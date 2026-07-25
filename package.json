@@ -1,0 +1,23 @@
+{
+  "name": "cartoon-holdem",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A cartoony Texas Hold'em foundation built to be mutated into custom card games.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test 'test/**/*.test.js'",
+    "art:optimize": "node scripts/optimize-art.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "canvas": "^2.11.2",
+    "vite": "^5.4.11"
+  }
+}

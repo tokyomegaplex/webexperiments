@@ -1,0 +1,17 @@
+[package]
+name = "cartoon-holdem-bevy"
+version = "0.1.0"
+edition = "2021"
+description = "Cartoon Texas Hold'em — Bevy 3D version (native desktop)."
+
+[dependencies]
+# `wav` decodes the sound effects; `mp3`/`flac` cover common music formats
+# (ogg/vorbis is already on via the default features).
+bevy = { version = "0.18", features = ["wav", "mp3", "flac"] }
+
+# Faster incremental builds while keeping deps optimized.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
