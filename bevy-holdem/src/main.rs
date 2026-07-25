@@ -18,7 +18,7 @@ use bevy::render::view::Hdr;
 use bevy::ui::RelativeCursorPosition;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 
 mod characters;
@@ -461,9 +461,44 @@ struct AppUi {
     screenshot: bool,
 }
 
-/// Tutorial mode: shows a hand-ranking cheat sheet and contextual coaching tips.
-#[derive(Resource)]
-struct Tutorial(bool);
+/// Tutorial mode. Teaching happens as a series of screens you click "Next" to
+/// leave: first a fixed set of lessons, then one screen per new street as the
+/// hand plays out. The table is frozen while a screen is up, so nothing races
+/// past before you've read it.
+#[derive(Resource, Default)]
+struct Tutorial {
+    on: bool,
+    /// How far through `LESSONS` we are; `== LESSONS.len()` once they're done.
+    step: usize,
+    /// A screen waiting to be dismissed. While this is `Some`, the game holds.
+    pending: Option<String>,
+    /// Stage keys already taught. Each concept gets one screen, ever — so the
+    /// tutorial paces you through a first hand and then stops interrupting.
+    seen: HashSet<String>,
+}
+
+/// True while a tutorial screen is up and the table should stay frozen.
+impl Tutorial {
+    fn holding(&self) -> bool {
+        self.on && (self.step < LESSONS.len() || self.pending.is_some())
+    }
+}
+
+/// The opening lessons, shown one screen at a time before play begins.
+const LESSONS: [&str; 6] = [
+    "Welcome to Texas Hold 'em!\n\nYou'll get 2 private cards. Five more are dealt face-up in \
+     the middle for everyone to share. The best 5-card hand wins the pot.",
+    "Every hand starts with two forced bets called blinds, so there's always \
+     something worth playing for. The dealer button (D) moves round each hand.",
+    "First you each get your 2 private cards — that's called preflop. Look at \
+     them and decide whether they're worth betting on.",
+    "Then come the shared cards: three at once (the flop), then one more (the \
+     turn), then a last one (the river). There's a round of betting after each.",
+    "On your turn you can FOLD (give up the hand), CALL (match the current bet), \
+     CHECK (stay in for free), or RAISE (bet more and put pressure on).",
+    "Don't know what beats what? Click the \"Hand Guide\" button in the bottom-right \
+     any time to see every hand ranking with example cards.\n\nGood luck!",
+];
 
 /// A button on the title screen.
 #[derive(Component, Clone, Copy, PartialEq)]
@@ -477,6 +512,14 @@ enum TitleBtn {
 struct TutorialTip;
 #[derive(Component)]
 struct TutorialTipText;
+/// The "Next" button on a tutorial screen, its step counter, and the row that
+/// holds them (hidden when the banner is only showing a live coaching hint).
+#[derive(Component)]
+struct TutorialNextBtn;
+#[derive(Component)]
+struct TutorialStepText;
+#[derive(Component)]
+struct TutorialNextRow;
 
 /// The always-available hand-rankings reference: a button in the bottom-right
 /// corner that toggles a pop-up panel showing each hand with example cards.
@@ -661,7 +704,10 @@ fn main() {
         level: 0,
     })
     .insert_resource(IntroDrop(true))
-    .insert_resource(Tutorial(env::var("SHOW_TUTORIAL").is_ok()))
+    .insert_resource(Tutorial {
+        on: env::var("SHOW_TUTORIAL").is_ok(),
+        ..default()
+    })
     .insert_resource(SfxRng::new(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2436,9 +2482,10 @@ fn setup(
             ));
         });
 
-    // --- tutorial overlay: the contextual coaching tip ---
+    // --- tutorial overlay: the teaching screen / coaching tip ---
     // (Hand rankings live in the always-available bottom-right Hand Guide.)
-    // Contextual coaching tip, a banner across the top under the win banner.
+    // While a screen is up it carries a "Next" button and the table is frozen,
+    // so a lesson can't scroll past before you've read it.
     commands
         .spawn((
             Node {
@@ -2457,11 +2504,14 @@ fn setup(
             root.spawn((
                 Node {
                     max_width: Val::Px(760.0),
-                    padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
+                    padding: UiRect::axes(Val::Px(22.0), Val::Px(14.0)),
                     border: UiRect::all(Val::Px(2.0)),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(10.0),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.06, 0.10, 0.14, 0.92)),
+                BackgroundColor(Color::srgba(0.06, 0.10, 0.14, 0.95)),
                 BorderColor::all(Color::srgb(0.4, 0.7, 0.95)),
             ))
             .with_children(|b| {
@@ -2475,6 +2525,50 @@ fn setup(
                     TextLayout::new_with_justify(Justify::Center),
                     TutorialTipText,
                 ));
+                // The "Next" row: step counter + the button you must click to
+                // move on. Hidden when the banner is just a live coaching hint.
+                b.spawn((
+                    Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(14.0),
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    TutorialNextRow,
+                ))
+                .with_children(|row| {
+                    row.spawn((
+                        Text::new(""),
+                        TextFont {
+                            font_size: 14.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.6, 0.72, 0.85)),
+                        TutorialStepText,
+                    ));
+                    row.spawn((
+                        Button,
+                        Node {
+                            padding: UiRect::axes(Val::Px(24.0), Val::Px(9.0)),
+                            border: UiRect::all(Val::Px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.2, 0.42, 0.62)),
+                        BorderColor::all(Color::srgb(0.55, 0.8, 1.0)),
+                        TutorialNextBtn,
+                    ))
+                    .with_children(|nb| {
+                        nb.spawn((
+                            Text::new("Next"),
+                            TextFont {
+                                font_size: 20.0,
+                                ..default()
+                            },
+                            TextColor(Color::WHITE),
+                        ));
+                    });
+                });
             });
         });
 
@@ -5041,10 +5135,18 @@ fn money_labels(
 
 /// Fold the title/pause/screenshot overlays into the master freeze flag the
 /// game-driving systems already respect.
-fn sync_pause(ui: Res<AppUi>, mode: Res<GameMode>, mut poker: ResMut<Poker>) {
+fn sync_pause(
+    ui: Res<AppUi>,
+    mode: Res<GameMode>,
+    tut: Res<Tutorial>,
+    mut poker: ResMut<Poker>,
+) {
     // Title, pause menu, screenshots, and the win screen all freeze the table.
     // (Busting out does NOT freeze it — the AI play on while you spectate.)
-    let frozen = ui.screenshot || ui.on_title || ui.paused || *mode == GameMode::Won;
+    // A tutorial screen also holds the table until you click "Next", so the
+    // lesson can't be overtaken by the hand it's explaining.
+    let frozen =
+        ui.screenshot || ui.on_title || ui.paused || *mode == GameMode::Won || tut.holding();
     if poker.paused != frozen {
         poker.paused = frozen;
     }
@@ -5086,7 +5188,7 @@ fn title_buttons(
         match *interaction {
             Interaction::Pressed => {
                 *bg = BackgroundColor(Color::srgb(0.16, 0.55, 0.28));
-                tut.0 = *btn == TitleBtn::Tutorial;
+                tut.on = *btn == TitleBtn::Tutorial;
                 ui.on_title = false;
             }
             Interaction::Hovered => *bg = BackgroundColor(Color::srgb(0.26, 0.5, 0.32)),
@@ -5126,10 +5228,10 @@ fn cheat_sheet_toggle(
         };
         let pressed = *interaction == Interaction::Pressed;
         if pressed && !*prev_tut && !ui.on_title {
-            tut.0 = !tut.0;
+            tut.on = !tut.on;
         }
         *prev_tut = pressed;
-        *bg = match (*interaction, tut.0) {
+        *bg = match (*interaction, tut.on) {
             (Interaction::Pressed, _) => BackgroundColor(Color::srgb(0.2, 0.42, 0.62)),
             (Interaction::Hovered, _) => BackgroundColor(Color::srgb(0.18, 0.3, 0.45)),
             (Interaction::None, true) => BackgroundColor(Color::srgba(0.16, 0.34, 0.5, 0.95)),
@@ -5137,7 +5239,7 @@ fn cheat_sheet_toggle(
         };
     }
     for mut t in &mut tut_text {
-        *t = Text::new(if tut.0 { "Tutorial: on" } else { "Tutorial: off" });
+        *t = Text::new(if tut.on { "Tutorial: on" } else { "Tutorial: off" });
     }
 
     for (interaction, mut bg, mut vis) in &mut btn {
@@ -5173,13 +5275,17 @@ fn cheat_sheet_toggle(
 
 /// Show/update the contextual coaching tip while tutorial mode is on.
 fn tutorial_system(
-    tut: Res<Tutorial>,
+    mut tut: ResMut<Tutorial>,
     ui: Res<AppUi>,
     poker: Res<Poker>,
-    mut tip: Query<&mut Visibility, With<TutorialTip>>,
-    mut tip_text: Query<&mut Text, With<TutorialTipText>>,
+    mut prev_next: Local<bool>,
+    mut tip: Query<&mut Visibility, (With<TutorialTip>, Without<TutorialNextRow>)>,
+    mut tip_text: Query<&mut Text, (With<TutorialTipText>, Without<TutorialStepText>)>,
+    mut next_row: Query<&mut Visibility, (With<TutorialNextRow>, Without<TutorialTip>)>,
+    mut next_btn: Query<(&Interaction, &mut BackgroundColor), With<TutorialNextBtn>>,
+    mut step_text: Query<&mut Text, (With<TutorialStepText>, Without<TutorialTipText>)>,
 ) {
-    let show = tut.0 && !ui.on_title && !ui.paused;
+    let show = tut.on && !ui.on_title && !ui.paused;
     let vis = if show {
         Visibility::Visible
     } else {
@@ -5188,12 +5294,87 @@ fn tutorial_system(
     for mut v in &mut tip {
         *v = vis;
     }
-    if show {
-        let text = tutorial_text(&poker);
-        for mut t in &mut tip_text {
-            *t = Text::new(text.clone());
+    if !show {
+        return;
+    }
+
+    // Queue a screen whenever the hand reaches a new stage, so each stage is
+    // explained once and waits for you rather than scrolling by.
+    if tut.step >= LESSONS.len() && tut.pending.is_none() {
+        let key = tutorial_key(&poker);
+        if !key.is_empty() && !tut.seen.contains(&key) {
+            tut.seen.insert(key);
+            tut.pending = Some(tutorial_text(&poker));
         }
     }
+
+    // A "Next"-gated screen is up whenever lessons remain or a screen is queued.
+    let screen = if tut.step < LESSONS.len() {
+        Some(LESSONS[tut.step].to_string())
+    } else {
+        tut.pending.clone()
+    };
+
+    // --- the Next button advances (and is the only way to advance) ---
+    let mut clicked = false;
+    for (interaction, mut bg) in &mut next_btn {
+        let pressed = *interaction == Interaction::Pressed;
+        if pressed && !*prev_next && screen.is_some() {
+            clicked = true;
+        }
+        *prev_next = pressed;
+        *bg = match *interaction {
+            Interaction::Pressed => BackgroundColor(Color::srgb(0.26, 0.55, 0.78)),
+            Interaction::Hovered => BackgroundColor(Color::srgb(0.24, 0.5, 0.72)),
+            Interaction::None => BackgroundColor(Color::srgb(0.2, 0.42, 0.62)),
+        };
+    }
+    if clicked {
+        if tut.step < LESSONS.len() {
+            tut.step += 1;
+        } else {
+            tut.pending = None;
+        }
+    }
+
+    // --- fill in the banner: a screen (with Next) or a live coaching hint ---
+    let (body, counter, show_next) = match (tut.step < LESSONS.len(), &tut.pending) {
+        (true, _) => (
+            LESSONS[tut.step].to_string(),
+            format!("{} / {}", tut.step + 1, LESSONS.len()),
+            true,
+        ),
+        (false, Some(p)) => (p.clone(), String::new(), true),
+        (false, None) => (tutorial_text(&poker), String::new(), false),
+    };
+    for mut t in &mut tip_text {
+        *t = Text::new(body.clone());
+    }
+    for mut t in &mut step_text {
+        *t = Text::new(counter.clone());
+    }
+    let row_vis = if show_next {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut next_row {
+        *v = row_vis;
+    }
+}
+
+/// A short key for "what stage is the hand at" — a new key means a new screen
+/// worth stopping on. Empty means nothing to explain right now.
+fn tutorial_key(poker: &Poker) -> String {
+    let g = &poker.game;
+    if poker.pending_deal || poker.dealing {
+        return "deal".to_string();
+    }
+    if g.street == Street::HandOver {
+        return "showdown".to_string();
+    }
+    // One screen per betting round.
+    format!("{:?}", g.street)
 }
 
 /// The contextual coaching line for the current game state.
